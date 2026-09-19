@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#7C3AED">
+<title>لا يوجد اتصال بالإنترنت — أفكار وأسرار</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    font-family: 'Tajawal', 'Inter', Arial, sans-serif;
+    background: linear-gradient(165deg, #120A22 0%, #1E1440 45%, #170D2E 100%);
+    color: #FAF8FC;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .wrap { text-align: center; padding: 32px; max-width: 420px; }
+  .icon-badge {
+    width: 84px; height: 84px; border-radius: 50%; margin: 0 auto 22px;
+    background: radial-gradient(circle at 30% 30%, #8B5CF6, #6D28D9 60%, #3B1670 100%);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 36px; box-shadow: 0 10px 30px rgba(0,0,0,.4);
+  }
+  h1 { font-size: 20px; margin: 0 0 10px; color: #FCD34D; }
+  p { font-size: 14.5px; line-height: 1.7; color: #C9B9E0; margin: 0 0 24px; }
+  button {
+    background: linear-gradient(135deg, #8B5CF6, #7C3AED);
+    color: #fff; border: none; padding: 12px 26px; border-radius: 12px;
+    font-size: 14.5px; font-weight: 700; cursor: pointer;
+    box-shadow: 0 8px 20px rgba(124,58,237,.35);
+  }
+  button:active { transform: translateY(1px); }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="icon-badge">📡</div>
+    <h1>لا يوجد اتصال بالإنترنت</h1>
+    <p>يبدو إنه مفيش اتصال بالإنترنت دلوقتي. تأكد من اتصالك وحاول تاني — كورساتك وبياناتك محفوظة وآمنة.</p>
+    <button onclick="window.location.reload()">إعادة المحاولة</button>
+  </div>
+</body>
+</html>
