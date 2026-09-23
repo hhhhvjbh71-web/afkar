@@ -3,41 +3,49 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="theme-color" content="#7C3AED">
-<title>لا يوجد اتصال بالإنترنت — أفكار وأسرار</title>
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>لا يوجد اتصال بالإنترنت — منصة الخلية — أ/ إسلام عبدالواحد</title>
 <style>
-  * { box-sizing: border-box; }
-  html, body {
-    margin: 0; padding: 0; height: 100%;
-    font-family: 'Tajawal', 'Inter', Arial, sans-serif;
-    background: linear-gradient(165deg, #120A22 0%, #1E1440 45%, #170D2E 100%);
-    color: #FAF8FC;
-    display: flex; align-items: center; justify-content: center;
+  :root{
+    --bg:#F7FCFD; --card:#ffffff; --text:#0B2536; --muted:#64748B;
+    --primary:#06B6D4; --primary-dark:#0E7490;
   }
-  .wrap { text-align: center; padding: 32px; max-width: 420px; }
-  .icon-badge {
-    width: 84px; height: 84px; border-radius: 50%; margin: 0 auto 22px;
-    background: radial-gradient(circle at 30% 30%, #8B5CF6, #6D28D9 60%, #3B1670 100%);
-    display: flex; align-items: center; justify-content: center;
-    font-size: 36px; box-shadow: 0 10px 30px rgba(0,0,0,.4);
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;}
+  body{
+    font-family:'Tajawal','Segoe UI',Arial,sans-serif;
+    background:var(--bg); color:var(--text);
+    display:flex; align-items:center; justify-content:center;
+    min-height:100vh; padding:24px;
   }
-  h1 { font-size: 20px; margin: 0 0 10px; color: #FCD34D; }
-  p { font-size: 14.5px; line-height: 1.7; color: #C9B9E0; margin: 0 0 24px; }
-  button {
-    background: linear-gradient(135deg, #8B5CF6, #7C3AED);
-    color: #fff; border: none; padding: 12px 26px; border-radius: 12px;
-    font-size: 14.5px; font-weight: 700; cursor: pointer;
-    box-shadow: 0 8px 20px rgba(124,58,237,.35);
+  .card{
+    background:var(--card); border-radius:20px; padding:40px 28px;
+    max-width:380px; width:100%; text-align:center;
+    box-shadow:0 10px 40px rgba(15,23,42,0.08);
   }
-  button:active { transform: translateY(1px); }
+  .icon{
+    width:72px; height:72px; margin:0 auto 20px; border-radius:18px;
+    background:linear-gradient(135deg,#0F172A,#1E293B);
+    display:flex; align-items:center; justify-content:center;
+    font-size:32px;
+  }
+  h1{font-size:1.15rem; font-weight:800; margin-bottom:10px;}
+  p{color:var(--muted); font-size:0.92rem; line-height:1.7; margin-bottom:22px;}
+  button{
+    background:linear-gradient(135deg,var(--primary),var(--primary-dark));
+    color:#fff; border:none; border-radius:12px; padding:12px 28px;
+    font-family:inherit; font-weight:700; font-size:0.95rem; cursor:pointer;
+    box-shadow:0 6px 18px rgba(6, 182, 212,0.35);
+  }
+  button:active{transform:scale(0.97);}
 </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="icon-badge">📡</div>
+  <div class="card">
+    <div class="icon">📡</div>
     <h1>لا يوجد اتصال بالإنترنت</h1>
-    <p>يبدو إنه مفيش اتصال بالإنترنت دلوقتي. تأكد من اتصالك وحاول تاني — كورساتك وبياناتك محفوظة وآمنة.</p>
-    <button onclick="window.location.reload()">إعادة المحاولة</button>
+    <p>يبدو أنك غير متصل بالإنترنت حاليًا. تحقق من الاتصال وحاول مرة أخرى للوصول إلى المنصة.</p>
+    <button onclick="location.reload()">إعادة المحاولة</button>
   </div>
 </body>
 </html>

@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════════
 //  dashboard-bridge.js  — جسر الربط الكامل
-//  منصة أفكار وأسرار التعليمية
+//  منصة الخلية — أ/ إسلام عبدالواحد لتعليم الأحياء
 //
 //  يُحمَّل هذا الملف في index.html بعد data.js وقبل app.js
 //
@@ -192,7 +192,7 @@
         const tStr   = String(dc.term  || 'all');
         const isFree = dc.type === 'free' || !dc.price || Number(dc.price) === 0;
         const thumb  = dc.thumbnail || dc.thumb || '';
-        const color  = dc.headerColor || dc.color || dc.bg || 'linear-gradient(135deg,#150e29,#1e40af)';
+        const color  = dc.headerColor || dc.color || dc.bg || 'linear-gradient(135deg,#0f172a,#1e40af)';
         const lessons = dedupeLessons(dc.lessons || []);
         const id = String(dc.id);
 
@@ -508,14 +508,67 @@
         }
     }
 
+    // ── مزامنة مباشرة مع Firebase collection('quizzes') ──────────────
+    // بدون هذا الجزء: الاختبار يتحفظ في Firebase من الداشبورد بنجاح،
+    // لكن واجهة الطالب (index.html) محدش بيجيبه من هناك أبداً — بيفضل
+    // يدوّر في localStorage بس، واللي بيكون فاضي على أي جهاز/متصفح
+    // تاني غير جهاز المعلم. هذا الـ listener هو المصدر الحقيقي الوحيد
+    // اللي بيوصل الاختبارات لأي طالب على أي جهاز.
+    var _quizzesSyncStarted = false;
+
+    function startQuizzesFirebaseSync() {
+        if (_quizzesSyncStarted) return;
+        var db = window.db;
+        if (!db) return;
+        _quizzesSyncStarted = true;
+        try {
+            db.collection('quizzes').onSnapshot({ includeMetadataChanges: false }, function(snapshot) {
+                var list = [];
+                snapshot.forEach(function(doc) {
+                    var d = doc.data() || {};
+                    if (d.id == null) d.id = doc.id;
+                    list.push(d);
+                });
+                localStorage.setItem('iraqiplatform_quizzes', JSON.stringify(list));
+                localStorage.setItem('alsaqr_quizzes', JSON.stringify(list));
+
+                // إعادة رسم الصفحة الحالية لو الطالب فاتح درس/اختبار فعلاً —
+                // إلا لو كان وسط حل اختبار حي (test/) عشان منمسحش إجاباته
+                try {
+                    var _hash = (window.location.hash || '').replace(/^#/, '');
+                    if (typeof window.handleRoute === 'function' && _hash.indexOf('test/') !== 0) {
+                        window.handleRoute();
+                    }
+                } catch(e) {}
+
+                window.dispatchEvent(new CustomEvent('quizzesUpdated', { detail: { count: list.length } }));
+            }, function(err) {
+                console.warn('[Bridge] quizzes snapshot error:', err.message);
+                _quizzesSyncStarted = false;
+            });
+            console.info('[Bridge] ✅ Firebase quizzes listener attached');
+        } catch(e) {
+            console.warn('[Bridge] quizzes listener setup failed:', e.message);
+            _quizzesSyncStarted = false;
+        }
+    }
+
     // انتظر window.db — جرب فوراً ثم عبر الحدث ثم fallbacks متعددة
     if (window.db) {
         startFirebaseBridgeSync();
+        startQuizzesFirebaseSync();
+        startQuizAttemptsFirebaseSync();
     } else {
-        window.addEventListener('firebaseReady', function() { startFirebaseBridgeSync(); });
-        [1000, 3000, 6000].forEach(function(delay) {
+        window.addEventListener('firebaseReady', function() {
+            startFirebaseBridgeSync();
+            startQuizzesFirebaseSync();
+            startQuizAttemptsFirebaseSync();
+        });
+        [1000, 3000, 6000, 10000, 15000].forEach(function(delay) {
             setTimeout(function() {
                 if (!_bridgeStarted && window.db) startFirebaseBridgeSync();
+                if (!_quizzesSyncStarted && window.db) startQuizzesFirebaseSync();
+                startQuizAttemptsFirebaseSync(); // بتتأكد بنفسها من عدم التكرار + بتعيد المحاولة لو المستخدم لسه ملوش session
             }, delay);
         });
     }
@@ -534,7 +587,9 @@
         sync:            syncDashToIraqi,
         syncStudents:    syncStudents,
         getDashCourses:  getDashCourses,
-        convertCourse:   dashCourseToIraqi
+        convertCourse:   dashCourseToIraqi,
+        syncQuizzes:     startQuizzesFirebaseSync,
+        syncAttempts:    startQuizAttemptsFirebaseSync
     };
 
     // ── getQuizById: يبحث في كلا مفتاحَي التخزين ───────────────────
@@ -561,7 +616,8 @@
     // ── saveQuizAttempt: يحفظ نتيجة الطالب في alsaqr_quiz_attempts ─
     global.saveQuizAttempt = function(attempt) {
         // attempt = { userId, userName, quizId, courseId, lessonId, score, total,
-        //              correct, wrong, answers, submittedAt }
+        //              correct, wrong, percentage, passed, answers, submittedAt }
+        attempt.status = 'submitted'; // ← علامة "تم الحل نهائيًا" التي تمنع أي محاولة جديدة
         try {
             var KEY = 'alsaqr_quiz_attempts';
             var attempts = JSON.parse(localStorage.getItem(KEY) || '[]');
@@ -573,9 +629,44 @@
             else attempts.push(attempt);
             localStorage.setItem(KEY, JSON.stringify(attempts));
 
-            // مزامنة مع Firebase إذا متاح
+            // ── إذا اجتاز الطالب الاختبار → سجّل إتمام الدرس المرتبط ──
+            if (attempt.passed && attempt.lessonId && attempt.courseId && attempt.userId) {
+                if (typeof window.markLessonCompleted === 'function') {
+                    window.markLessonCompleted(attempt.userId, attempt.courseId, attempt.lessonId);
+                }
+            }
+
+            // ── أطلق حدث لتحديث واجهة الدرس إذا كان الطالب داخل صفحة الدرس ──
+            window.dispatchEvent(new CustomEvent('quizAttemptSaved', {
+                detail: {
+                    quizId: attempt.quizId,
+                    courseId: attempt.courseId,
+                    lessonId: attempt.lessonId,
+                    passed: attempt.passed,
+                    percentage: attempt.percentage
+                }
+            }));
+
+                    // If passed: mark the linked lesson as completed to unlock the next lesson
+            if (attempt.passed && attempt.lessonId && attempt.courseId && attempt.userId) {
+                if (typeof window.markLessonCompleted === 'function') {
+                    window.markLessonCompleted(attempt.userId, attempt.courseId, attempt.lessonId);
+                }
+            }
+
+            // Fire event so lesson page can refresh nav state
+            try {
+                window.dispatchEvent(new CustomEvent('quizAttemptSaved', {
+                    detail: { quizId: attempt.quizId, courseId: attempt.courseId,
+                               lessonId: attempt.lessonId, passed: attempt.passed, percentage: attempt.percentage }
+                }));
+            } catch(_) {}
+
+            // مزامنة مع Firebase إذا متاح — نفس docId المستخدم في
+            // beginOrResumeQuizAttempt بالظبط عشان يحدّث نفس المستند
+            // (ويحافظ على startedAt الأصلي) بدل إنشاء مستند مكرر
             if (window.db) {
-                var docId = (attempt.userId || 'anon') + '_' + attempt.quizId;
+                var docId = 'ATT_' + String(attempt.userId || 'anon') + '_' + String(attempt.quizId);
                 window.db.collection('quiz_attempts').doc(docId).set(attempt, { merge: true })
                     .catch(function(e) { console.warn('[Bridge] quiz_attempt Firebase sync:', e); });
             }
@@ -591,6 +682,151 @@
             }) || null;
         } catch(e) { return null; }
     };
+
+    // ═══════════════════════════════════════════════════════════════
+    // مزامنة محاولات الاختبار من Firebase — مصدر الحقيقة الوحيد لمنع
+    // إعادة الحل. بدون هذا الجزء: getQuizAttempt بيقرأ localStorage
+    // بس، واللي بيكون فاضي على أي جهاز/متصفح تاني غير اللي حل منه
+    // الطالب الاختبار فعليًا — فيقدر "يحل تاني" من جهاز تاني أو حتى بعد
+    // مسح بيانات المتصفح. هذا الـ listener مقصور على محاولات المستخدم
+    // الحالي فقط (where userId == ...) لأسباب أداء وخصوصية.
+    // ═══════════════════════════════════════════════════════════════
+    var _attemptsSyncStarted = false;
+    var _attemptsSyncUserId  = null;
+
+    function _getCurrentSessionUserId() {
+        try {
+            var raw = localStorage.getItem('iraqiplatform_current_user');
+            if (!raw) return null;
+            var u = JSON.parse(raw);
+            return (u && u.id) ? String(u.id) : null;
+        } catch(e) { return null; }
+    }
+
+    function startQuizAttemptsFirebaseSync() {
+        var db = window.db;
+        if (!db) return;
+        var uid = _getCurrentSessionUserId();
+        if (!uid) return; // لسه محدش سجل دخول — هنعيد المحاولة لاحقاً
+        if (_attemptsSyncStarted && _attemptsSyncUserId === uid) return; // شغال بالفعل لنفس المستخدم
+        _attemptsSyncStarted = true;
+        _attemptsSyncUserId = uid;
+        try {
+            db.collection('quiz_attempts').where('userId', '==', uid)
+                .onSnapshot({ includeMetadataChanges: false }, function(snapshot) {
+                    var list = [];
+                    snapshot.forEach(function(doc) {
+                        var d = doc.data() || {};
+                        list.push(d);
+                    });
+                    localStorage.setItem('alsaqr_quiz_attempts', JSON.stringify(list));
+
+                    try {
+                        var _hash = (window.location.hash || '').replace(/^#/, '');
+                        if (typeof window.handleRoute === 'function' && _hash.indexOf('test/') !== 0) {
+                            window.handleRoute();
+                        }
+                    } catch(e) {}
+
+                    window.dispatchEvent(new CustomEvent('quizAttemptsSynced', { detail: { count: list.length } }));
+                }, function(err) {
+                    console.warn('[Bridge] quiz_attempts snapshot error:', err.message);
+                    _attemptsSyncStarted = false;
+                });
+            console.info('[Bridge] ✅ Firebase quiz_attempts listener attached for user', uid);
+        } catch(e) {
+            console.warn('[Bridge] quiz_attempts listener setup failed:', e.message);
+            _attemptsSyncStarted = false;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // beginOrResumeQuizAttempt — نقطة الحقيقة الوحيدة لبدء/استئناف
+    // محاولة اختبار. بيرجع Promise دايماً (حتى لو Firebase مش متاح،
+    // بيرجع نتيجة احتياطية آمنة من غير ما يكسر شيء).
+    //
+    // النتيجة: {
+    //   already: bool          — هل فيه محاولة "submitted" فعلاً؟
+    //   attempt: object|null   — بيانات المحاولة المكتملة (لو already)
+    //   startedAtMs: number    — وقت بداية المحاولة (مرجعية السيرفر لو متاح)
+    //   remainingSeconds: number|null — null يعني بدون وقت محدد للاختبار
+    //   serverAnchored: bool   — هل الوقت محسوب من السيرفر فعلاً؟
+    // }
+    // ═══════════════════════════════════════════════════════════════
+    global.beginOrResumeQuizAttempt = function(userId, quizId, courseId, lessonId, durationSeconds) {
+        function localFallback() {
+            var existing = global.getQuizAttempt(userId, quizId);
+            if (existing && existing.status === 'submitted') {
+                return { already: true, attempt: existing, startedAtMs: null, remainingSeconds: null, serverAnchored: false };
+            }
+            return {
+                already: false, attempt: null,
+                startedAtMs: Date.now(),
+                remainingSeconds: durationSeconds > 0 ? durationSeconds : null,
+                serverAnchored: false
+            };
+        }
+
+        if (!window.db || !userId || !quizId) {
+            return Promise.resolve(localFallback());
+        }
+
+        // ملحوظة: صيغة الـ ID هنا (ATT_userId_quizId) لازم تفضل مطابقة
+        // تمامًا لنفس الصيغة اللي زرار "تصفير وإعادة" في الداشبورد بيحذفها
+        // (dashboard.html → resetStudentAttempt) وإلا زرار الأدمن مش هيقدر
+        // يصفّر محاولة الطالب فعليًا.
+        var docId = 'ATT_' + String(userId) + '_' + String(quizId);
+        var ref = window.db.collection('quiz_attempts').doc(docId);
+
+        return ref.get().then(function(snap) {
+            var data = snap.exists ? snap.data() : null;
+
+            if (data && data.status === 'submitted') {
+                return { already: true, attempt: data, startedAtMs: null, remainingSeconds: null, serverAnchored: false };
+            }
+
+            // فيه محاولة "in_progress" محفوظة بالفعل → استخدم startedAt الأصلي
+            if (data && data.startedAt) {
+                return ref.set({ lastCheckedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true })
+                    .then(function() { return ref.get(); })
+                    .then(function(freshSnap) {
+                        var fresh = freshSnap.data() || {};
+                        var localNow = Date.now();
+                        var startedAtMs = fresh.startedAt && fresh.startedAt.toMillis ? fresh.startedAt.toMillis() : localNow;
+                        var checkedAtMs = fresh.lastCheckedAt && fresh.lastCheckedAt.toMillis ? fresh.lastCheckedAt.toMillis() : localNow;
+                        var offset = checkedAtMs - localNow; // فرق ساعة السيرفر عن جهاز الطالب
+                        var serverNow = Date.now() + offset;
+                        var elapsedSec = Math.max(0, Math.floor((serverNow - startedAtMs) / 1000));
+                        var remaining = (durationSeconds > 0) ? Math.max(0, durationSeconds - elapsedSec) : null;
+                        return { already: false, attempt: fresh, startedAtMs: startedAtMs, remainingSeconds: remaining, serverAnchored: true };
+                    })
+                    .catch(function() { return localFallback(); });
+            }
+
+            // مفيش محاولة قبل كده → ابدأ واحدة جديدة بتوقيت السيرفر
+            return ref.set({
+                userId: userId, quizId: quizId, courseId: courseId || null, lessonId: lessonId || null,
+                status: 'in_progress',
+                startedAt: firebase.firestore.FieldValue.serverTimestamp(),
+                lastCheckedAt: firebase.firestore.FieldValue.serverTimestamp()
+            }, { merge: true })
+                .then(function() { return ref.get(); })
+                .then(function(freshSnap) {
+                    var fresh = freshSnap.data() || {};
+                    var localNow = Date.now();
+                    var startedAtMs = fresh.startedAt && fresh.startedAt.toMillis ? fresh.startedAt.toMillis() : localNow;
+                    return {
+                        already: false, attempt: fresh, startedAtMs: startedAtMs,
+                        remainingSeconds: durationSeconds > 0 ? durationSeconds : null,
+                        serverAnchored: true
+                    };
+                })
+                .catch(function() { return localFallback(); });
+        }).catch(function() {
+            return localFallback();
+        });
+    };
+
 
     // ── إعادة المزامنة عند وصول بيانات من Firebase ─────────────────────
     // يُطلق firebase-service.js هذا الحدث عند تحديث الكورسات من السحابة
@@ -620,6 +856,6 @@
         syncStudents();
     }
 
-    console.info('[منصة أفكار وأسرار] ✅ dashboard-bridge.js loaded — ' + getDashCourses().length + ' كورسات Dashboard متاحة');
+    console.info('[منصة الخلية — أ/ إسلام عبدالواحد] ✅ dashboard-bridge.js loaded — ' + getDashCourses().length + ' كورسات Dashboard متاحة');
 
 })(window);

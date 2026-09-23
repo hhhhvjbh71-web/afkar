@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 //  firebase-service.js — خدمة الربط بقاعدة بيانات Google Firebase
-//  منصة أفكار وأسرار التعليمية
-//  Project: aile-mahrous
+//  منصة الخلية — أ/ إسلام عبدالواحد لتعليم الأحياء
+//  Project: mahmoud-abdeldaem-manassa
 // ═══════════════════════════════════════════════════════════════════════
 
 (function (global) {
@@ -9,13 +9,13 @@
 
     // ── إعدادات Firebase الخاصة بالمشروع ──────────────────────────────
     const firebaseConfig = {
-        apiKey: "AIzaSyBKiWPEfCjfwtXLX0O0A_pUYRcxlznuNZk",
-        authDomain: "aile-mahrous.firebaseapp.com",
-        projectId: "aile-mahrous",
-        storageBucket: "aile-mahrous.firebasestorage.app",
-        messagingSenderId: "541158887824",
-        appId: "1:541158887824:web:bc6303a2627999fc967475",
-        measurementId: "G-QPMYRVHLLR"
+        apiKey: "AIzaSyA-tRgZrEPCi-1Bdx6NoDJYOPorzn5Ep-8",
+        authDomain: "mahmoud-abdeldaem-manassa.firebaseapp.com",
+        projectId: "mahmoud-abdeldaem-manassa",
+        storageBucket: "mahmoud-abdeldaem-manassa.firebasestorage.app",
+        messagingSenderId: "53298877358",
+        appId: "1:53298877358:web:7fe6de4a69162c057eae3f",
+        measurementId: "G-HV2S70S3YW"
     };
 
     let firebaseApp = null;
@@ -55,7 +55,7 @@
             window.firebase = firebase;
             firebaseAuth = firebase.auth ? firebase.auth() : null;
             isInitialized = true;
-            console.log('🔥 [Firebase] Connected successfully to project: aile-mahrous');
+            console.log('🔥 [Firebase] Connected successfully to project: mahmoud-abdeldaem-manassa');
 
             // بدء المزامنة الحية للبيانات
             startRealtimeSync();

@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // templates.js — HTML Templates separated from Application Logic
-// منصة أفكار وأسرار — Ideas & Secrets Platform
+// Mr. Islam Abdelwahed — Biology Platform
 // ═══════════════════════════════════════════════════════════════
 
 window.Templates = (function () {
@@ -13,9 +13,9 @@ window.Templates = (function () {
             <div class="container">
                 <div class="empty-state">
                     <div class="empty-state-icon">🔍</div>
-                    <h3>الصفحة غير موجودة</h3>
-                    <p>الصفحة اللي بتدور عليها مش موجودة أو تم نقلها.</p>
-                    <a href="#home" class="btn btn-primary">الرجوع للرئيسية</a>
+                    <h3>Page Not Found</h3>
+                    <p>The page you are looking for does not exist or has been moved.</p>
+                    <a href="#home" class="btn btn-primary">Back to Home</a>
                 </div>
             </div>
         </div>`;
@@ -89,23 +89,28 @@ window.Templates = (function () {
             <div class="hb-bg" aria-hidden="true">
                 <div class="hb-orb hb-orb-1"></div>
                 <div class="hb-orb hb-orb-2"></div>
-                <span class="hb-float hb-f1">Grammar</span>
-                <span class="hb-float hb-f2">Vocabulary</span>
-                <span class="hb-float hb-f3">“ Fluency ”</span>
-                <span class="hb-float hb-f4">Speak • Read • Write</span>
-                <span class="hb-float hb-f5">ABC</span>
-                <span class="hb-float hb-f6">Confidence</span>
+                <span class="hb-float hb-f1">🧬 DNA</span>
+                <span class="hb-float hb-f2">RNA</span>
+                <span class="hb-float hb-f3">O₂ ⇌ CO₂</span>
+                <span class="hb-float hb-f4">🔬 Cell</span>
+                <span class="hb-float hb-f5">ATP</span>
+                <span class="hb-float hb-f6">Mitosis</span>
             </div>
             <div class="hb-container">
                 <div class="hb-body">
                     <div class="hb-img-side">
                         <h1 class="hb-heading">
-                            <span class="hb-h-prefix">English with</span>
-                            <span class="hb-h-name">Mr. Ali Mahrous</span>
+                            <span class="hb-h-prefix">Biology with</span>
+                            <span class="hb-h-name">Mr. Islam Abdelwahed</span>
                             <span class="hb-h-suffix">Secondary &amp; Preparatory</span>
                         </h1>
                         <div class="hb-img-frame">
-                            <img src="hero-ali-mahrous.jpg?v=20260914-0900" alt="Mr. Ali Mahrous — English Language Teacher" class="hb-img" loading="eager">
+                            <div class="hb-img-glow" aria-hidden="true"></div>
+                            <img src="hero-cell-portrait.jpg?v=20260923" alt="Mr. Islam Abdelwahed"
+                                class="hb-img" loading="eager" onerror="this.src='teacher-new.jpg'">
+                            <div class="hb-img-caption">
+                                <span class="hb-img-badge">🧬 Biology Teacher</span>
+                            </div>
                         </div>
                     </div>
                     <div class="hb-text-side">
@@ -165,24 +170,24 @@ window.Templates = (function () {
                     <div class="teacher-visual">
                         <div class="teacher-avatar-circle">👨‍🏫</div>
                         <div class="teacher-name-badge">${teacherName}</div>
-                        <div class="teacher-role-badge">English Language Expert &amp; Teacher for Secondary &amp; Preparatory</div>
+                        <div class="teacher-role-badge">Biology Expert &amp; Teacher for Secondary &amp; Preparatory</div>
                     </div>
                     <div class="teacher-content">
                         <span class="section-badge"><span class="icon">⭐</span> Lead Instructor</span>
-                        <h2>Making English Clear, Confident &amp; Inspiring</h2>
+                        <h2>Making Biology Clear, Intuitive &amp; Inspiring</h2>
                         <p>
-                            "My core mission is not merely to teach rules, but to build genuine confidence in the language — understanding how grammar and vocabulary work together so students can read, write, and speak with ease. I am proud to have guided many students toward top grades and real fluency."
+                            "My core mission is not merely to help students memorize, but to build a true biological mindset that understands how living systems work and connects every concept to real life. Over 15+ years, I have proudly guided thousands of students to top faculties and full marks."
                         </p>
                         <div class="teacher-pills">
-                            <div class="teacher-pill"><span>🏆</span> Years of Dedicated Experience</div>
+                            <div class="teacher-pill"><span>🏆</span> 15+ Years Experience</div>
                             <div class="teacher-pill"><span>🎯</span> Top Nationwide Ranks</div>
-                            <div class="teacher-pill"><span>📖</span> Exclusive Simplified Method</div>
+                            <div class="teacher-pill"><span>🔬</span> Exclusive Simplified Method</div>
                             <div class="teacher-pill"><span>⚡</span> Personal Homework Follow-up</div>
                         </div>
                         <div style="display:flex;gap:12px;flex-wrap:wrap;">
                             <a href="#courses" class="btn btn-primary btn-lg">Browse Courses &rarr;</a>
                             <a href="https://wa.me/201000000000" target="_blank" rel="noopener"
-                                class="btn btn-outline btn-lg">💬 Contact Mr. Ali</a>
+                                class="btn btn-outline btn-lg">💬 Contact Mr. Islam</a>
                         </div>
                     </div>
                 </div>
@@ -235,10 +240,29 @@ window.Templates = (function () {
         return `
         <section class="cta-section">
             <div class="container text-center">
-                <h2 class="reveal">Ready to Excel in English with Mr. Ali Mahrous?</h2>
+                <h2 class="reveal">Ready to Excel in Biology with Mr. Islam Abdelwahed?</h2>
                 <p class="reveal reveal-delay-1">Join thousands of students and experience an engaging learning journey that makes all the difference.</p>
                 <div style="display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-top:var(--space-xl);">
                     ${btnsHTML}
+                </div>
+            </div>
+        </section>
+
+        <section class="instructor-banner-section">
+            <div class="container">
+                <div class="instructor-banner-eyebrow reveal">
+                    <span class="instructor-banner-badge">🧬 هوية المنصة</span>
+                </div>
+                <div class="instructor-banner-card reveal reveal-delay-1">
+                    <svg class="ibs-dna ibs-dna-left" viewBox="0 0 120 400" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M20,10 C20,60 100,60 100,110 C100,160 20,160 20,210 C20,260 100,260 100,310 C100,360 20,360 20,390" stroke="#34D399" stroke-width="3" fill="none" opacity="0.5"/>
+                        <path d="M100,10 C100,60 20,60 20,110 C20,160 100,160 100,210 C100,260 20,260 20,310 C20,360 100,360 100,390" stroke="#5EEAD4" stroke-width="3" fill="none" opacity="0.5"/>
+                    </svg>
+                    <img src="instructor-banner.jpg?v=20260921" alt="الخلية — أ/ إسلام عبدالواحد — معا نحو القمة" class="instructor-banner-img" loading="lazy">
+                    <svg class="ibs-dna ibs-dna-right" viewBox="0 0 120 400" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M20,10 C20,60 100,60 100,110 C100,160 20,160 20,210 C20,260 100,260 100,310 C100,360 20,360 20,390" stroke="#5EEAD4" stroke-width="3" fill="none" opacity="0.5"/>
+                        <path d="M100,10 C100,60 20,60 20,110 C20,160 100,160 100,210 C100,260 20,260 20,310 C20,360 100,360 100,390" stroke="#34D399" stroke-width="3" fill="none" opacity="0.5"/>
+                    </svg>
                 </div>
             </div>
         </section>`;
@@ -252,27 +276,27 @@ window.Templates = (function () {
                 <div class="auth-visual-mesh"></div>
                 <div class="auth-visual-content">
                     <div class="auth-teacher-badge">
-                        <div class="auth-t-img auth-t-img-mono" aria-hidden="true"><span>أ</span></div>
+                        <img src="teacher-new.jpg" alt="Mr. Islam Abdelwahed" class="auth-t-img" onerror="this.src='صورة المدرس الجديد.jpeg'">
                         <div class="auth-t-info">
-                            <div class="auth-t-crown">✨</div>
-                            <div class="auth-t-name">${siteName}</div>
-                            <div class="auth-t-sub">منصتك التعليمية الشاملة 📖</div>
+                            <div class="auth-t-crown">👑</div>
+                            <div class="auth-t-name">Mr. Islam Abdelwahed</div>
+                            <div class="auth-t-sub">Senior Biology Teacher 🔬</div>
                         </div>
                     </div>
-                    <h2 class="auth-visual-title">أهلًا بيك تاني في منصتك! 📖</h2>
-                    <p class="auth-visual-desc">سجّل دخولك عشان تكمل رحلتك نحو الدرجة النهائية.</p>
+                    <h2 class="auth-visual-title">Welcome Back to Biology Excellence! 🔬</h2>
+                    <p class="auth-visual-desc">Sign in to continue your journey toward the full mark with Mr. Islam Abdelwahed.</p>
                     <div class="auth-features-list">
                         <div class="auth-feat-item">
                             <span class="auth-feat-icon">📚</span>
-                            <span>وصول فوري لكل كورساتك المفعّلة</span>
+                            <span>Instant access to all your active courses</span>
                         </div>
                         <div class="auth-feat-item">
                             <span class="auth-feat-icon">📊</span>
-                            <span>تابع تقدّمك ودرجات اختباراتك لحظة بلحظة</span>
+                            <span>Track your progress and test scores in real time</span>
                         </div>
                         <div class="auth-feat-item">
                             <span class="auth-feat-icon">🔔</span>
-                            <span>إشعارات فورية بالدروس الجديدة وتحديثات المنهج</span>
+                            <span>Instant notifications on new lessons and curriculum updates</span>
                         </div>
                     </div>
                 </div>
@@ -282,11 +306,11 @@ window.Templates = (function () {
                 <div class="auth-form-card">
                     <div class="auth-card-header">
                         <a href="#home" class="auth-logo-badge">
-                            <span class="auth-logo-icon">📖</span>
+                            <span class="auth-logo-icon">🔬</span>
                             <span class="auth-logo-text">${siteName}</span>
                         </a>
-                        <h1 class="auth-heading">تسجيل الدخول</h1>
-                        <p class="auth-subtitle">أدخل رقم هاتفك المسجّل وكلمة المرور للاستمرار</p>
+                        <h1 class="auth-heading">Sign In</h1>
+                        <p class="auth-subtitle">Enter your registered phone number and password to continue</p>
                     </div>
 
                     <div id="loginErrorMsg" class="auth-alert-error" style="display:none;"></div>
@@ -295,8 +319,8 @@ window.Templates = (function () {
                         id="loginForm" novalidate>
                         <div class="form-group">
                             <div class="form-label-row">
-                                <label class="form-label">📱 رقم هاتف الطالب</label>
-                                <span class="phone-len-counter" id="loginPhoneCounter">0 / 11 رقم</span>
+                                <label class="form-label">📱 Student Phone Number</label>
+                                <span class="phone-len-counter" id="loginPhoneCounter">0 / 11 digits</span>
                             </div>
                             <div class="form-input-icon-wrapper">
                                 <span class="form-input-icon">📱</span>
@@ -307,44 +331,44 @@ window.Templates = (function () {
                                     oninput="handlePhoneInputLive(this, 'loginPhoneCounter')">
                             </div>
                             <div class="form-hint" id="loginPhoneHint">
-                                لازم يكون 11 رقم ويبدأ بـ 01 (أرقام فقط)
+                                Must enter 11 digits starting with 01 (numbers only)
                             </div>
                         </div>
 
                         <div class="form-group">
                             <div class="form-label-row">
-                                <label class="form-label">🔒 كلمة المرور</label>
+                                <label class="form-label">🔒 Password</label>
                                 <a href="#" onclick="event.preventDefault();
-                                    showToast('تواصل مع الدعم الفني لإعادة تعيين كلمة المرور', 'info');"
-                                    class="forgot-pw-link">نسيت كلمة المرور؟</a>
+                                    showToast('Contact technical support to reset your password', 'info');"
+                                    class="forgot-pw-link">Forgot password?</a>
                             </div>
                             <div class="form-input-icon-wrapper" style="position:relative;">
                                 <span class="form-input-icon">🔒</span>
                                 <input type="password" class="form-input"
-                                    placeholder="أدخل كلمة المرور" required id="loginPassword"
+                                    placeholder="Enter your password" required id="loginPassword"
                                     autocomplete="current-password">
                                 <span class="password-toggle"
                                     onclick="togglePassword('loginPassword', this)"
-                                    title="إظهار/إخفاء كلمة المرور">👁️</span>
+                                    title="Show/Hide Password">👁️</span>
                             </div>
                         </div>
 
                         <div class="form-options-row">
                             <label class="remember-label">
                                 <input type="checkbox" checked class="custom-checkbox">
-                                <span>تذكّرني على هذا الجهاز</span>
+                                <span>Remember me on this device</span>
                             </label>
                         </div>
 
                         <button type="submit" class="btn btn-auth-submit" id="loginSubmitBtn">
-                            <span>تسجيل الدخول</span>
-                            <span class="btn-arrow-icon">←</span>
+                            <span>Sign In</span>
+                            <span class="btn-arrow-icon">→</span>
                         </button>
                     </form>
 
                     <div class="auth-footer-box">
-                        <span>لسه معملتش حساب؟</span>
-                        <a href="#register" class="auth-switch-link">أنشئ حساب مجانًا ✨</a>
+                        <span>Don't have an account yet?</span>
+                        <a href="#register" class="auth-switch-link">Create Account Free ✨</a>
                     </div>
                 </div>
             </div>
@@ -354,11 +378,11 @@ window.Templates = (function () {
     // ── Register Page Template ──────────────────────────────────
     function registerPage(siteName) {
         const governorates = [
-            'القاهرة', 'الجيزة', 'الإسكندرية', 'الدقهلية', 'البحيرة', 'الفيوم',
-            'الغربية', 'الإسماعيلية', 'المنوفية', 'المنيا', 'القليوبية', 'الوادي الجديد',
-            'السويس', 'أسوان', 'أسيوط', 'بني سويف', 'بورسعيد', 'دمياط',
-            'الشرقية', 'جنوب سيناء', 'كفر الشيخ', 'مطروح', 'الأقصر', 'قنا',
-            'شمال سيناء', 'سوهاج', 'البحر الأحمر'
+            'Cairo', 'Giza', 'Alexandria', 'Dakahlia', 'Beheira', 'Fayoum',
+            'Gharbia', 'Ismailia', 'Monufia', 'Minya', 'Qalyubia', 'New Valley',
+            'Suez', 'Aswan', 'Asyut', 'Beni Suef', 'Port Said', 'Damietta',
+            'Sharkia', 'South Sinai', 'Kafr El Sheikh', 'Matrouh', 'Luxor', 'Qena',
+            'North Sinai', 'Sohag', 'Red Sea'
         ];
         const govOptions = governorates.map(g => `<option>${g}</option>`).join('');
 
@@ -368,27 +392,27 @@ window.Templates = (function () {
                 <div class="auth-visual-mesh"></div>
                 <div class="auth-visual-content">
                     <div class="auth-teacher-badge">
-                        <div class="auth-t-img auth-t-img-mono" aria-hidden="true"><span>أ</span></div>
+                        <img src="teacher-new.jpg" alt="Mr. Islam Abdelwahed" class="auth-t-img" onerror="this.src='صورة المدرس الجديد.jpeg'">
                         <div class="auth-t-info">
-                            <div class="auth-t-crown">✨</div>
-                            <div class="auth-t-name">${siteName}</div>
-                            <div class="auth-t-sub">منصتك التعليمية الشاملة 📖</div>
+                            <div class="auth-t-crown">👑</div>
+                            <div class="auth-t-name">Mr. Islam Abdelwahed</div>
+                            <div class="auth-t-sub">Senior Biology Teacher 🔬</div>
                         </div>
                     </div>
-                    <h2 class="auth-visual-title">انضم لنخبة المتفوّقين! 🎓</h2>
-                    <p class="auth-visual-desc">أنشئ حسابك المجاني في ثواني وابدأ بالوصول لدروس حصرية واختبارات تفاعلية.</p>
+                    <h2 class="auth-visual-title">Join the Biology Achievers! 🎓</h2>
+                    <p class="auth-visual-desc">Create your free account in seconds and get access to exclusive lessons and interactive exams.</p>
                     <div class="auth-features-list">
                         <div class="auth-feat-item">
                             <span class="auth-feat-icon">✨</span>
-                            <span>شرح واضح ومنظّم لأصعب النقاط</span>
+                            <span>Clear, structured explanations of challenging topics</span>
                         </div>
                         <div class="auth-feat-item">
                             <span class="auth-feat-icon">🎯</span>
-                            <span>اختبارات شاملة بتصحيح فوري ونموذج إجابة</span>
+                            <span>Comprehensive exams with instant grading &amp; model answers</span>
                         </div>
                         <div class="auth-feat-item">
                             <span class="auth-feat-icon">📊</span>
-                            <span>متابعة دورية لمستواك وتقارير تقدّم مستمرة</span>
+                            <span>Periodic performance tracking and progress reports</span>
                         </div>
                     </div>
                 </div>
@@ -398,11 +422,11 @@ window.Templates = (function () {
                 <div class="auth-form-card auth-register-card">
                     <div class="auth-card-header">
                         <a href="#home" class="auth-logo-badge">
-                            <span class="auth-logo-icon">📖</span>
+                            <span class="auth-logo-icon">🔬</span>
                             <span class="auth-logo-text">${siteName}</span>
                         </a>
-                        <h1 class="auth-heading">إنشاء حساب</h1>
-                        <p class="auth-subtitle">املأ بياناتك عشان تنضم للمنصة</p>
+                        <h1 class="auth-heading">Create Account</h1>
+                        <p class="auth-subtitle">Fill in your details to join the platform</p>
                     </div>
 
                     <div id="registerErrorMsg" class="auth-alert-error" style="display:none;"></div>
@@ -413,11 +437,11 @@ window.Templates = (function () {
 
                         <!-- Full Name -->
                         <div class="form-group">
-                            <label class="form-label">👤 اسم الطالب رباعي</label>
+                            <label class="form-label">👤 Student Full Name</label>
                             <div class="form-input-icon-wrapper">
                                 <span class="form-input-icon">👤</span>
                                 <input type="text" class="form-input"
-                                    placeholder="مثال: أحمد محمد علي"
+                                    placeholder="e.g. Ahmed Mohamed Ali"
                                     required id="registerFullName" autocomplete="name">
                             </div>
                         </div>
@@ -426,8 +450,8 @@ window.Templates = (function () {
                         <div class="form-row-auth">
                             <div class="form-group">
                                 <div class="form-label-row">
-                                    <label class="form-label">📱 هاتف الطالب</label>
-                                    <span class="phone-len-counter" id="regPhoneCounter">0 / 11 رقم</span>
+                                    <label class="form-label">📱 Student Phone</label>
+                                    <span class="phone-len-counter" id="regPhoneCounter">0 / 11 digits</span>
                                 </div>
                                 <div class="form-input-icon-wrapper">
                                     <span class="form-input-icon">📱</span>
@@ -440,8 +464,8 @@ window.Templates = (function () {
                             </div>
                             <div class="form-group">
                                 <div class="form-label-row">
-                                    <label class="form-label">📞 هاتف ولي الأمر</label>
-                                    <span class="phone-len-counter" id="regParentPhoneCounter">0 / 11 رقم</span>
+                                    <label class="form-label">📞 Parent Phone</label>
+                                    <span class="phone-len-counter" id="regParentPhoneCounter">0 / 11 digits</span>
                                 </div>
                                 <div class="form-input-icon-wrapper">
                                     <span class="form-input-icon">📞</span>
@@ -457,28 +481,28 @@ window.Templates = (function () {
                         <!-- Grade & Governorate -->
                         <div class="form-row-auth">
                             <div class="form-group">
-                                <label class="form-label">🎓 الصف الدراسي</label>
+                                <label class="form-label">🎓 Grade Level</label>
                                 <select class="form-select" id="registerGrade" required
                                     onchange="handleGradeChange(this.value)">
-                                    <option value="">— اختر الصف الدراسي —</option>
-                                    <optgroup label="المرحلة الثانوية">
-                                        <option value="تالتة ثانوي">الصف الثالث الثانوي</option>
-                                        <option value="تانية ثانوي">الصف الثاني الثانوي</option>
-                                        <option value="تانية ثانوي برمجة">الصف الثاني الثانوي (برمجة)</option>
-                                        <option value="بكالوريا عام برمجة">بكالوريا عام (برمجة)</option>
-                                        <option value="أولى ثانوي">الصف الأول الثانوي</option>
+                                    <option value="">— Select Grade —</option>
+                                    <optgroup label="Secondary Stage">
+                                        <option value="تالتة ثانوي">3rd Year Secondary</option>
+                                        <option value="تانية ثانوي">2nd Year Secondary</option>
+                                        <option value="تانية ثانوي برمجة">2nd Year Secondary (Programming)</option>
+                                        <option value="بكالوريا عام برمجة">General Baccalaureate (Programming)</option>
+                                        <option value="أولى ثانوي">1st Year Secondary</option>
                                     </optgroup>
-                                    <optgroup label="المرحلة الإعدادية">
-                                        <option value="تالتة إعدادي">الصف الثالث الإعدادي</option>
-                                        <option value="تانية إعدادي">الصف الثاني الإعدادي</option>
-                                        <option value="أولى إعدادي">الصف الأول الإعدادي</option>
+                                    <optgroup label="Preparatory Stage">
+                                        <option value="تالتة إعدادي">3rd Year Preparatory</option>
+                                        <option value="تانية إعدادي">2nd Year Preparatory</option>
+                                        <option value="أولى إعدادي">1st Year Preparatory</option>
                                     </optgroup>
                                 </select>
                             </div>
                             <div class="form-group">
-                                <label class="form-label">📍 المحافظة</label>
+                                <label class="form-label">📍 Governorate</label>
                                 <select class="form-select" id="registerGovernorate" required>
-                                    <option value="">— اختر المحافظة —</option>
+                                    <option value="">— Select Governorate —</option>
                                     ${govOptions}
                                 </select>
                             </div>
@@ -486,17 +510,17 @@ window.Templates = (function () {
 
                         <!-- Section (For 2nd secondary) -->
                         <div class="form-group" id="sectionGroup" style="display:none;">
-                            <label class="form-label">🔬 اختر الشعبة</label>
+                            <label class="form-label">🔬 Choose Section</label>
                             <div class="section-radio-pills">
                                 <label class="radio-pill-card">
                                     <input type="radio" name="registerSection"
                                         value="عام" id="sectionAmm">
-                                    <span>📖 عام (علمي / أدبي)</span>
+                                    <span>📖 General (Scientific / Literary)</span>
                                 </label>
                                 <label class="radio-pill-card">
                                     <input type="radio" name="registerSection"
                                         value="بكالوريا" id="sectionBak">
-                                    <span>🌐 بكالوريا دولية / لغات</span>
+                                    <span>🎓 International / Languages Baccalaureate</span>
                                 </label>
                             </div>
                         </div>
@@ -504,12 +528,12 @@ window.Templates = (function () {
                         <!-- Password -->
                         <div class="form-row-auth">
                             <div class="form-group">
-                                <label class="form-label">🔒 كلمة المرور
-                                    <small>(6 أحرف أو أكثر)</small></label>
+                                <label class="form-label">🔒 Password
+                                    <small>(6+ characters)</small></label>
                                 <div class="form-input-icon-wrapper" style="position:relative;">
                                     <span class="form-input-icon">🔒</span>
                                     <input type="password" class="form-input"
-                                        placeholder="أدخل كلمة المرور" required
+                                        placeholder="Enter password" required
                                         id="registerPassword"
                                         oninput="checkPasswordStrength(this.value)"
                                         autocomplete="new-password">
@@ -527,11 +551,11 @@ window.Templates = (function () {
                                     style="font-size:0.75rem;margin-top:4px;"></div>
                             </div>
                             <div class="form-group">
-                                <label class="form-label">🔒 تأكيد كلمة المرور</label>
+                                <label class="form-label">🔒 Confirm Password</label>
                                 <div class="form-input-icon-wrapper" style="position:relative;">
                                     <span class="form-input-icon">🔒</span>
                                     <input type="password" class="form-input"
-                                        placeholder="أعد كتابة كلمة المرور" required
+                                        placeholder="Repeat password" required
                                         id="registerConfirmPassword"
                                         autocomplete="new-password">
                                     <span class="password-toggle"
@@ -545,23 +569,23 @@ window.Templates = (function () {
                             <label class="remember-label">
                                 <input type="checkbox" required class="custom-checkbox"
                                     id="registerTerms" checked>
-                                <span>أوافق على
+                                <span>I agree to the
                                     <a href="#" onclick="event.preventDefault();
-                                        showToast('الشروط بتضمن خصوصية وأمان بياناتك بالكامل', 'info');"
-                                        class="auth-link-terms">شروط الاستخدام وسياسة الخصوصية</a>
+                                        showToast('Terms ensure full privacy and security of your data', 'info');"
+                                        class="auth-link-terms">Terms of Service &amp; Privacy Policy</a>
                                 </span>
                             </label>
                         </div>
 
                         <button type="submit" class="btn btn-auth-submit" id="registerSubmitBtn">
-                            <span>أنشئ حسابك الآن</span>
+                            <span>Create Account Now</span>
                             <span class="btn-arrow-icon">✨</span>
                         </button>
                     </form>
 
                     <div class="auth-footer-box">
-                        <span>عندك حساب بالفعل؟</span>
-                        <a href="#login" class="auth-switch-link">سجّل دخولك مباشرة ←</a>
+                        <span>Already have an account?</span>
+                        <a href="#login" class="auth-switch-link">Sign in directly →</a>
                     </div>
                 </div>
             </div>
@@ -575,7 +599,7 @@ window.Templates = (function () {
             <div class="footer-grid">
                 <div class="footer-brand">
                     <div class="footer-logo">
-                        <div class="footer-logo-icon footer-logo-icon-mono">أ</div>
+                        <div class="footer-logo-icon">🧬</div>
                         <span class="footer-logo-text">${config.fullName}</span>
                     </div>
                     <p>${config.description}</p>

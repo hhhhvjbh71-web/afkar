@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// منصة أفكار وأسرار — Main Application
+// منصة الخلية — أ/ إسلام عبدالواحد — Main Application
 // SPA Router, Page Renderers, Components, Interactions
 // Session: localStorage key = 'iraqiplatform_current_user'
 // ═══════════════════════════════════════════════════════════════
@@ -39,6 +39,13 @@
         localStorage.setItem(SESSION_KEY, JSON.stringify(user));
         currentUser = user;
         isLoggedIn = true;
+        // فور تسجيل الدخول: تأكد من مزامنة محاولات الاختبار الخاصة بيه
+        // من Firebase فورًا (مش بس عن طريق إعادة المحاولة التلقائية)
+        try {
+            if (window.IRAQI_BRIDGE && typeof window.IRAQI_BRIDGE.syncAttempts === 'function') {
+                window.IRAQI_BRIDGE.syncAttempts();
+            }
+        } catch (e) {}
     }
 
     function clearSession() {
@@ -68,6 +75,72 @@
         );
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // AUTHENTICATION — 4 خطوات منفصلة تمامًا عن بعض، كل واحدة مسؤولة
+    // عن حاجة واحدة بس (بدل ما يكونوا مخلوطين جوه handleLogin القديمة):
+    //   1) findAccountByPhone   → هل الحساب موجود؟ (Firestore هو المرجع)
+    //   2) verifyAccountPassword → هل كلمة المرور صح؟
+    //   3) saveSession           → إنشاء جلسة الدخول (موجودة فوق)
+    //   4) loadSession           → استعادة الجلسة + تأكيد صلاحيتها (فوق)
+    // ═══════════════════════════════════════════════════════════════
+
+    // 1) البحث عن حساب برقم الهاتف — قاعدة البيانات (Firestore) هي
+    //    المصدر الأساسي والموثوق دايمًا، مش بس Fallback لما الكاش يكون
+    //    فاضي. الكاش المحلي بيتحدّث بعد كل بحث ناجح كتحسين أداء فقط،
+    //    وبيُستخدم هو نفسه كحل احتياطي وحيد لو Firebase كان غير متاح
+    //    فعليًا (مثلاً الطالب أوفلاين).
+    async function findAccountByPhone(phone) {
+        if (window.db) {
+            try {
+                const snap = await window.db.collection('users').where('phone', '==', phone).limit(1).get();
+                if (!snap.empty) {
+                    const remote = Object.assign({ id: snap.docs[0].id }, snap.docs[0].data());
+                    try {
+                        const localUsers = getUsers();
+                        const idx = localUsers.findIndex(u => String(u.id) === String(remote.id));
+                        if (idx >= 0) localUsers[idx] = Object.assign({}, localUsers[idx], remote);
+                        else localUsers.push(remote);
+                        localStorage.setItem(USERS_KEY, JSON.stringify(localUsers));
+                    } catch (e) { /* تحديث الكاش تحسين ثانوي فقط — تجاهل أي خطأ فيه */ }
+                    return remote;
+                }
+                return null; // Firestore أكّد: الرقم غير مسجّل فعليًا
+            } catch (e) {
+                console.warn('[Auth] تعذّر الوصول لقاعدة البيانات، استخدام النسخة المحلية كحل احتياطي:', e.message);
+                // نكمل تحت للـ fallback المحلي بدل ما نمنع تسجيل الدخول بالكامل بسبب مشكلة شبكة مؤقتة
+            }
+        }
+        // Fallback فقط عند تعذّر الوصول الفعلي لقاعدة البيانات (أوفلاين مثلاً)
+        return getUsers().find(u => (u.phone || '').replace(/[^0-9]/g, '') === phone) || null;
+    }
+
+    // 2) التحقق من كلمة المرور — منفصل تمامًا عن التحقق من وجود الحساب
+    function verifyAccountPassword(account, password) {
+        return !!(account && account.password === password);
+    }
+
+    // 4) تأكيد صلاحية الجلسة المستعادة في الخلفية — بدون تعطيل عرض
+    //    الواجهة فورًا (تفاديًا لأي Flash)، لكن لو تبيّن إن الحساب
+    //    اتحذف فعليًا من قاعدة البيانات، يتم إنهاء الجلسة تلقائيًا
+    //    بدل ما يفضل المستخدم "مسجّل دخول" ببيانات وهمية/قديمة.
+    function verifySessionInBackground() {
+        if (!isLoggedIn || !currentUser || !currentUser.id || !window.db) return;
+        window.db.collection('users').doc(String(currentUser.id)).get().then(function (doc) {
+            if (!doc.exists) {
+                console.warn('[Auth] الحساب المحفوظ محليًا لم يعد موجودًا في قاعدة البيانات — سيتم إنهاء الجلسة.');
+                clearSession();
+                if (typeof window.handleRoute === 'function') window.handleRoute();
+                return;
+            }
+            // حدّث بيانات الجلسة بأحدث نسخة من قاعدة البيانات (نفس المعرف نفسه، بيانات محدّثة فقط)
+            var fresh = Object.assign({ id: doc.id }, doc.data());
+            currentUser = Object.assign({}, currentUser, fresh);
+            try { localStorage.setItem(SESSION_KEY, JSON.stringify(currentUser)); } catch (e) {}
+        }).catch(function (e) {
+            console.warn('[Auth] تعذّر تأكيد صلاحية الجلسة (سيتم الاعتماد على النسخة المحلية مؤقتًا):', e.message);
+        });
+    }
+
     // ── Password Validation (min 6 chars, English letters or digits) ─
     function validatePassword(pw) {
         // At least 6 characters: English letters or digits only
@@ -93,6 +166,59 @@
     function navigate(hash) {
         window.location.hash = hash;
     }
+
+    // يُستخدم من dashboard-bridge.js لإعادة رسم الصفحة الحالية فور وصول
+    // بيانات جديدة من Firebase (مثل الاختبارات) — بدون تغيير الـ hash
+    window.handleRoute = handleRoute;
+
+    // loadLessonIframe: plays YouTube video inside the platform after thumbnail click
+    window.loadLessonIframe = function(embedUrl, thumbEl) {
+        if (!embedUrl) return;
+        var container = document.getElementById('lessonVideoEmbedContainer');
+        if (!container) return;
+
+        var sep = embedUrl.indexOf('?') > -1 ? '&' : '?';
+        var playUrl = embedUrl + sep + 'autoplay=1';
+
+        var shields = [
+            '<div class="yt-shield yt-shield-top" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>',
+            '<div class="yt-shield yt-shield-tr" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>',
+            '<div class="yt-shield yt-shield-tl" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>',
+            '<div class="yt-shield yt-shield-br" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>',
+            '<div class="yt-shield yt-shield-bl" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>'
+        ].join('');
+
+        container.innerHTML = [
+            '<iframe src="' + playUrl + '" frameborder="0" allowfullscreen',
+            ' allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"',
+            ' referrerpolicy="strict-origin-when-cross-origin"',
+            ' style="position:absolute;top:0;left:0;width:100%;height:100%;border:none;border-radius:14px;z-index:1;"></iframe>',
+            shields
+        ].join('');
+    };
+
+    window._showEmbedError = function(container, embedUrl) {
+        var m = (embedUrl || '').match(/embed\/([A-Za-z0-9_-]{11})/);
+        var ytId = m ? m[1] : '';
+        container.innerHTML =
+            '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;' +
+            'background:linear-gradient(135deg,#0f0f0f,#1a1a2e);border-radius:14px;padding:32px;text-align:center;gap:16px;">' +
+            '<div style="font-size:3rem;">&#127910;</div>' +
+            '<h3 style="color:#fff;margin:0;font-size:1.1rem;font-weight:800;">الفيديو غير متاح للتضمين</h3>' +
+            '<p style="color:rgba(255,255,255,0.5);margin:0;font-size:0.85rem;max-width:320px;line-height:1.6;">' +
+            'تأكد من تفعيل خاصية التضمين من إعدادات الفيديو في YouTube Studio.</p>' +
+            '<div style="background:rgba(255,255,255,0.07);border-radius:12px;padding:14px 20px;font-size:0.82rem;' +
+            'color:rgba(255,255,255,0.65);max-width:360px;text-align:right;direction:rtl;line-height:2;">' +
+            '<strong style="color:#14B8A6;">&#128272; للمدرس/المسؤول:</strong><br>' +
+            '&#9312; افتح YouTube Studio<br>' +
+            '&#9313; اختر الفيديو &larr; Edit<br>' +
+            '&#9314; More Options &larr; فعّل <strong>Allow embedding &#9989;</strong><br>' +
+            '&#9315; احفظ التغييرات' +
+            '</div>' +
+            '</div>';
+    };
+
+
 
     // ── Page Renderer ───────────────────────────────────────────
     function renderPage(page, params) {
@@ -162,6 +288,7 @@
                 content.innerHTML = renderTestPage(params[0], params[1], params[2]);
                 footer.style.display = 'none';
                 window.scrollTo(0, 0);
+                initTestPage(params[0], params[1], params[2]);
                 break;
             default:
                 content.innerHTML = render404Page();
@@ -205,29 +332,32 @@
                     <div class="header-logo-icon">
                         <svg class="header-logo-svg" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
                             <defs>
-                                <linearGradient id="amLogoBg" x1="0%" y1="0%" x2="100%" y2="100%">
-                                    <stop offset="0%" stop-color="#6D28D9"/>
-                                    <stop offset="55%" stop-color="#4C1D95"/>
-                                    <stop offset="100%" stop-color="#3B1670"/>
+                                <linearGradient id="bioLogoCyan" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" stop-color="#6EE7B7"/>
+                                    <stop offset="50%" stop-color="#10B981"/>
+                                    <stop offset="100%" stop-color="#047857"/>
                                 </linearGradient>
-                                <linearGradient id="amLogoRing" x1="0%" y1="0%" x2="100%" y2="100%">
-                                    <stop offset="0%" stop-color="#8B5CF6"/>
-                                    <stop offset="55%" stop-color="#A780F5"/>
-                                    <stop offset="100%" stop-color="#F59E0B"/>
+                                <linearGradient id="bioLogoTeal" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" stop-color="#5EEAD4"/>
+                                    <stop offset="50%" stop-color="#14B8A6"/>
+                                    <stop offset="100%" stop-color="#115E59"/>
                                 </linearGradient>
-                                <linearGradient id="amLogoText" x1="0%" y1="0%" x2="100%" y2="100%">
-                                    <stop offset="0%" stop-color="#FFFFFF"/>
-                                    <stop offset="55%" stop-color="#CFE0F7"/>
-                                    <stop offset="100%" stop-color="#FCD34D"/>
-                                </linearGradient>
-                                <filter id="amLogoGlow" x="-20%" y="-20%" width="140%" height="140%">
-                                    <feDropShadow dx="0" dy="1.5" stdDeviation="2" flood-color="#F59E0B" flood-opacity="0.35"/>
+                                <filter id="bioLogoGlow" x="-20%" y="-20%" width="140%" height="140%">
+                                    <feDropShadow dx="0" dy="1.5" stdDeviation="2" flood-color="#10B981" flood-opacity="0.35"/>
                                 </filter>
                             </defs>
-                            <circle cx="24" cy="24" r="21" fill="url(#amLogoBg)"/>
-                            <circle cx="24" cy="24" r="19.5" stroke="url(#amLogoRing)" stroke-width="1.6" opacity="0.9"/>
-                            <circle cx="39" cy="12" r="2.3" fill="#FCD34D" filter="url(#amLogoGlow)"/>
-                            <text x="24" y="32" text-anchor="middle" style="font-family:'Tajawal',sans-serif;font-size:20px;font-weight:900;fill:url(#amLogoText);">أ</text>
+                            <!-- DNA double helix -->
+                            <path d="M14,6 C14,16 34,16 34,24 C34,32 14,32 14,42" stroke="url(#bioLogoCyan)" stroke-width="2.6" stroke-linecap="round" fill="none" filter="url(#bioLogoGlow)"/>
+                            <path d="M34,6 C34,16 14,16 14,24 C14,32 34,32 34,42" stroke="url(#bioLogoTeal)" stroke-width="2.6" stroke-linecap="round" fill="none"/>
+                            <line x1="14" y1="6" x2="34" y2="6" stroke="url(#bioLogoCyan)" stroke-width="1.8" stroke-linecap="round" opacity="0.85"/>
+                            <line x1="34" y1="24" x2="14" y2="24" stroke="url(#bioLogoTeal)" stroke-width="1.8" stroke-linecap="round" opacity="0.85"/>
+                            <line x1="14" y1="42" x2="34" y2="42" stroke="url(#bioLogoCyan)" stroke-width="1.8" stroke-linecap="round" opacity="0.85"/>
+                            <circle cx="14" cy="6" r="2.3" fill="url(#bioLogoCyan)"/>
+                            <circle cx="34" cy="6" r="2.3" fill="url(#bioLogoTeal)" filter="url(#bioLogoGlow)"/>
+                            <circle cx="34" cy="24" r="2.3" fill="url(#bioLogoCyan)"/>
+                            <circle cx="14" cy="24" r="2.3" fill="url(#bioLogoTeal)"/>
+                            <circle cx="14" cy="42" r="2.3" fill="url(#bioLogoCyan)"/>
+                            <circle cx="34" cy="42" r="2.3" fill="url(#bioLogoTeal)"/>
                         </svg>
                     </div>
                     <div>
@@ -237,17 +367,17 @@
                 </a>
 
                 <nav class="header-nav">
-                    <a href="#home" class="nav-link" data-page="home">الرئيسية</a>
-                    <a href="#courses" class="nav-link" data-page="courses">الكورسات</a>
-                    <a href="#home" onclick="setTimeout(function(){scrollToSection('courses-section')},100)" class="nav-link">كل الكورسات</a>
-                    <a href="#home" onclick="setTimeout(function(){scrollToSection('features-section')},100)" class="nav-link">مميزاتنا</a>
-                    <a href="#home" onclick="setTimeout(function(){scrollToSection('faq-section')},100)" class="nav-link">الأسئلة الشائعة</a>
-                    ${isAdmin() ? '<a href="#admin" class="nav-link admin-nav-link" data-page="admin">🛠 لوحة التحكم</a>' : ''}
+                    <a href="#home" class="nav-link" data-page="home">Home</a>
+                    <a href="#courses" class="nav-link" data-page="courses">Courses</a>
+                    <a href="#home" onclick="setTimeout(function(){scrollToSection('courses-section')},100)" class="nav-link">All Courses</a>
+                    <a href="#home" onclick="setTimeout(function(){scrollToSection('features-section')},100)" class="nav-link">Features</a>
+                    <a href="#home" onclick="setTimeout(function(){scrollToSection('faq-section')},100)" class="nav-link">FAQ</a>
+                    ${isAdmin() ? '<a href="#admin" class="nav-link admin-nav-link" data-page="admin">🛠 Admin</a>' : ''}
                 </nav>
 
                 <div class="header-actions">
                     <!-- Theme Toggle -->
-                    <button class="theme-toggle-btn" onclick="toggleTheme()" id="themeToggleBtn" aria-label="تبديل الوضع الليلي/النهاري" title="تبديل المظهر">
+                    <button class="theme-toggle-btn" onclick="toggleTheme()" id="themeToggleBtn" aria-label="Toggle Dark/Light Mode" title="Toggle Theme">
                         <span class="theme-toggle-track">
                             <span class="theme-icon sun-icon">
                                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
@@ -268,20 +398,20 @@
                                     <div class="dropdown-email">${userEmail || userGrade}</div>
                                 </div>
                                 <button class="dropdown-item" onclick="navigate('profile')">
-                                    <span>👤</span> ملفي الشخصي
+                                    <span>👤</span> My Profile
                                 </button>
-                                ${isAdmin() ? `<button class="dropdown-item" onclick="navigate('admin')"><span>🛠</span> لوحة التحكم</button>` : ''}
+                                ${isAdmin() ? `<button class="dropdown-item" onclick="navigate('admin')"><span>🛠</span> Admin</button>` : ''}
                                 <div class="dropdown-divider"></div>
                                 <button class="dropdown-item danger" onclick="handleLogout()">
-                                    <span>🚪</span> تسجيل الخروج
+                                    <span>🚪</span> Sign Out
                                 </button>
                             </div>
                         </div>
                     ` : `
-                        <a href="#login" class="btn btn-outline btn-sm" id="headerLoginBtn">تسجيل الدخول</a>
-                        <a href="#register" class="btn btn-primary btn-sm" id="headerRegisterBtn">إنشاء حساب</a>
+                        <a href="#login" class="btn btn-outline btn-sm" id="headerLoginBtn">Sign In</a>
+                        <a href="#register" class="btn btn-primary btn-sm" id="headerRegisterBtn">Create Account</a>
                     `}
-                    <button class="mobile-menu-btn" onclick="toggleMobileMenu()" aria-label="القائمة">☰</button>
+                    <button class="mobile-menu-btn" onclick="toggleMobileMenu()" aria-label="Menu">☰</button>
                 </div>
             </div>
         </header>
@@ -293,27 +423,17 @@
                 <a href="#home" class="header-logo" onclick="closeMobileMenu()">
                     <div class="header-logo-icon">
                         <svg class="header-logo-svg" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <defs>
-                                <linearGradient id="amLogoBgM" x1="0%" y1="0%" x2="100%" y2="100%">
-                                    <stop offset="0%" stop-color="#6D28D9"/>
-                                    <stop offset="55%" stop-color="#4C1D95"/>
-                                    <stop offset="100%" stop-color="#3B1670"/>
-                                </linearGradient>
-                                <linearGradient id="amLogoRingM" x1="0%" y1="0%" x2="100%" y2="100%">
-                                    <stop offset="0%" stop-color="#8B5CF6"/>
-                                    <stop offset="55%" stop-color="#A780F5"/>
-                                    <stop offset="100%" stop-color="#F59E0B"/>
-                                </linearGradient>
-                                <linearGradient id="amLogoTextM" x1="0%" y1="0%" x2="100%" y2="100%">
-                                    <stop offset="0%" stop-color="#FFFFFF"/>
-                                    <stop offset="55%" stop-color="#CFE0F7"/>
-                                    <stop offset="100%" stop-color="#FCD34D"/>
-                                </linearGradient>
-                            </defs>
-                            <circle cx="24" cy="24" r="21" fill="url(#amLogoBgM)"/>
-                            <circle cx="24" cy="24" r="19.5" stroke="url(#amLogoRingM)" stroke-width="1.6" opacity="0.9"/>
-                            <circle cx="39" cy="12" r="2.3" fill="#FCD34D"/>
-                            <text x="24" y="32" text-anchor="middle" style="font-family:'Tajawal',sans-serif;font-size:20px;font-weight:900;fill:url(#amLogoTextM);">أ</text>
+                            <path d="M14,6 C14,16 34,16 34,24 C34,32 14,32 14,42" stroke="#10B981" stroke-width="2.6" stroke-linecap="round" fill="none"/>
+                            <path d="M34,6 C34,16 14,16 14,24 C14,32 34,32 34,42" stroke="#14B8A6" stroke-width="2.6" stroke-linecap="round" fill="none"/>
+                            <line x1="14" y1="6" x2="34" y2="6" stroke="#10B981" stroke-width="1.8" stroke-linecap="round" opacity="0.85"/>
+                            <line x1="34" y1="24" x2="14" y2="24" stroke="#14B8A6" stroke-width="1.8" stroke-linecap="round" opacity="0.85"/>
+                            <line x1="14" y1="42" x2="34" y2="42" stroke="#10B981" stroke-width="1.8" stroke-linecap="round" opacity="0.85"/>
+                            <circle cx="14" cy="6" r="2.3" fill="#10B981"/>
+                            <circle cx="34" cy="6" r="2.3" fill="#14B8A6"/>
+                            <circle cx="34" cy="24" r="2.3" fill="#10B981"/>
+                            <circle cx="14" cy="24" r="2.3" fill="#14B8A6"/>
+                            <circle cx="14" cy="42" r="2.3" fill="#10B981"/>
+                            <circle cx="34" cy="42" r="2.3" fill="#14B8A6"/>
                         </svg>
                     </div>
                     <div>
@@ -324,33 +444,33 @@
             </div>
             <nav class="mobile-menu-nav">
                 <a href="#home" class="mobile-nav-link" data-page="home" onclick="closeMobileMenu()">
-                    <span class="icon">🏠</span> الرئيسية
+                    <span class="icon">🏠</span> Home
                 </a>
                 <a href="#courses" class="mobile-nav-link" data-page="courses" onclick="closeMobileMenu()">
-                    <span class="icon">📚</span> الكورسات
+                    <span class="icon">📚</span> Courses
                 </a>
                 <a href="#home" class="mobile-nav-link" onclick="closeMobileMenu(); setTimeout(function(){scrollToSection('courses-section')},150)">
-                    <span class="icon">🎓</span> كل الكورسات
+                    <span class="icon">🎓</span> All Courses
                 </a>
                 <a href="#home" class="mobile-nav-link" onclick="closeMobileMenu(); setTimeout(function(){scrollToSection('features-section')},150)">
-                    <span class="icon">✨</span> مميزات المنصة
+                    <span class="icon">✨</span> Platform Features
                 </a>
                 <a href="#home" class="mobile-nav-link" onclick="closeMobileMenu(); setTimeout(function(){scrollToSection('faq-section')},150)">
-                    <span class="icon">❓</span> الأسئلة الشائعة
+                    <span class="icon">❓</span> FAQ
                 </a>
                 ${isLoggedIn ? `
                     <a href="#profile" class="mobile-nav-link" data-page="profile" onclick="closeMobileMenu()">
-                        <span class="icon">👤</span> ملفي الشخصي
+                        <span class="icon">👤</span> My Profile
                     </a>
-                    ${isAdmin() ? `<a href="#admin" class="mobile-nav-link admin-nav-link" data-page="admin" onclick="closeMobileMenu()"><span class="icon">🛠</span> لوحة التحكم</a>` : ''}
+                    ${isAdmin() ? `<a href="#admin" class="mobile-nav-link admin-nav-link" data-page="admin" onclick="closeMobileMenu()"><span class="icon">🛠</span> Admin</a>` : ''}
                 ` : ''}
             </nav>
             <div class="mobile-menu-footer">
                 ${isLoggedIn ? `
-                    <button class="btn btn-outline btn-block" onclick="handleLogout(); closeMobileMenu();">تسجيل الخروج</button>
+                    <button class="btn btn-outline btn-block" onclick="handleLogout(); closeMobileMenu();">Sign Out</button>
                 ` : `
-                    <a href="#login" class="btn btn-primary btn-block" onclick="closeMobileMenu()">تسجيل الدخول</a>
-                    <a href="#register" class="btn btn-outline btn-block" onclick="closeMobileMenu()">إنشاء حساب</a>
+                    <a href="#login" class="btn btn-primary btn-block" onclick="closeMobileMenu()">Sign In</a>
+                    <a href="#register" class="btn btn-outline btn-block" onclick="closeMobileMenu()">Create Account</a>
                 `}
             </div>
         </div>`;
@@ -365,56 +485,56 @@
             <div class="footer-grid">
                 <div class="footer-brand">
                     <div class="footer-logo">
-                        <div class="footer-logo-icon footer-logo-icon-mono">أ</div>
+                        <div class="footer-logo-icon">🧬</div>
                         <span class="footer-logo-text">${SITE_CONFIG.fullName}</span>
                     </div>
                     <p>${SITE_CONFIG.description}</p>
                     <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
-                        <span class="badge badge-primary">دفعة 2026</span>
-                        <span class="badge badge-accent">محتوى تأسيسي وشامل</span>
+                        <span class="badge badge-primary">Class of 2026</span>
+                        <span class="badge badge-accent">Foundation &amp; Comprehensive Content</span>
                     </div>
                 </div>
                 <div class="footer-col">
-                    <h4>روابط سريعة</h4>
-                    <a href="#home">الرئيسية</a>
-                    <a href="#courses">كل الكورسات</a>
-                    <a href="#home" onclick="scrollToSection('courses-section')">الكورسات</a>
-                    <a href="#home" onclick="scrollToSection('faq-section')">الأسئلة الشائعة</a>
-                    ${!isLoggedIn ? '<a href="#register">إنشاء حساب</a>' : '<a href="#profile">ملفي الشخصي</a>'}
+                    <h4>Quick Links</h4>
+                    <a href="#home">Home</a>
+                    <a href="#courses">All Courses</a>
+                    <a href="#home" onclick="scrollToSection('courses-section')">Courses</a>
+                    <a href="#home" onclick="scrollToSection('faq-section')">FAQ</a>
+                    ${!isLoggedIn ? '<a href="#register">Create Account</a>' : '<a href="#profile">My Profile</a>'}
                 </div>
                 <div class="footer-col">
-                    <h4>المراحل الدراسية</h4>
-                    <a href="#courses" onclick="filterHomeStage('تالتة ثانوي')">الصف الثالث الثانوي</a>
-                    <a href="#courses" onclick="filterHomeStage('تانية ثانوي')">الصف الثاني الثانوي</a>
-                    <a href="#courses" onclick="filterHomeStage('أولى ثانوي')">الصف الأول الثانوي</a>
-                    <a href="#courses" onclick="filterHomeStage('بكالوريا عام برمجة')">بكالوريا عام برمجة</a>
-                    <a href="#courses" onclick="filterHomeStage('أولى إعدادي')">الصف الأول الإعدادي</a>
-                    <a href="#courses" onclick="filterHomeStage('تانية إعدادي')">الصف الثاني الإعدادي</a>
-                    <a href="#courses" onclick="filterHomeStage('تالتة إعدادي')">الصف الثالث الإعدادي</a>
-                    <a href="#courses" onclick="filterHomeStage('مجاني')">كورسات مجانية 🎁</a>
+                    <h4>Grade Levels</h4>
+                    <a href="#courses" onclick="filterHomeStage('تالتة ثانوي')">3rd Year Secondary</a>
+                    <a href="#courses" onclick="filterHomeStage('تانية ثانوي')">2nd Year Secondary</a>
+                    <a href="#courses" onclick="filterHomeStage('أولى ثانوي')">1st Year Secondary</a>
+                    <a href="#courses" onclick="filterHomeStage('بكالوريا عام برمجة')">Baccalaureate Programming</a>
+                    <a href="#courses" onclick="filterHomeStage('أولى إعدادي')">1st Year Preparatory</a>
+                    <a href="#courses" onclick="filterHomeStage('تانية إعدادي')">2nd Year Preparatory</a>
+                    <a href="#courses" onclick="filterHomeStage('تالتة إعدادي')">3rd Year Preparatory</a>
+                    <a href="#courses" onclick="filterHomeStage('مجاني')">Free Courses 🎁</a>
                 </div>
                 <div class="footer-col">
-                    <h4>تواصل معنا</h4>
-                    <a href="https://wa.me/201000000000" target="_blank" rel="noopener">📱 دعم واتساب</a>
-                    <a href="#" target="_blank" rel="noopener">💬 قناة تيليجرام</a>
-                    <a href="#" target="_blank" rel="noopener">📘 صفحة فيسبوك</a>
-                    <a href="#login">🔑 دخول الطلاب</a>
+                    <h4>Contact Us</h4>
+                    <a href="https://wa.me/201000000000" target="_blank" rel="noopener">📱 WhatsApp Support</a>
+                    <a href="#" target="_blank" rel="noopener">💬 Telegram Channel</a>
+                    <a href="#" target="_blank" rel="noopener">📘 Facebook Page</a>
+                    <a href="#login">🔑 Student Login</a>
                 </div>
             <div class="footer-bottom">
                 <div class="footer-copy">
-                    <span>&copy; ${SITE_CONFIG.year} ${SITE_CONFIG.fullName}. جميع الحقوق محفوظة.</span>
+                    <span>&copy; ${SITE_CONFIG.year} ${SITE_CONFIG.fullName}. All rights reserved.</span>
                 </div>
                 <div class="footer-dev-credit">
-                    <span>تصميم وتطوير</span>
+                    <span>Designed &amp; developed by</span>
                     <a href="https://wa.me/201001352771" target="_blank" rel="noopener noreferrer" class="dev-name-link">
                         <span class="dev-badge">Dev</span> Ahmed Amr Abu El-Hag
                     </a>
-                    <button class="footer-admin-btn" onclick="openDashModal()" title="لوحة التحكم">لوحة التحكم</button>
+                    <button class="footer-admin-btn" onclick="openDashModal()" title="Admin">Admin</button>
                 </div>
                 <div class="footer-social">
-                    <a href="https://wa.me/201000000000" target="_blank" rel="noopener" aria-label="واتساب" title="واتساب">💬</a>
-                    <a href="#" aria-label="تيليجرام" title="تيليجرام">✈️</a>
-                    <a href="#" aria-label="فيسبوك" title="فيسبوك">📘</a>
+                    <a href="https://wa.me/201000000000" target="_blank" rel="noopener" aria-label="WhatsApp" title="WhatsApp">💬</a>
+                    <a href="#" aria-label="Telegram" title="Telegram">✈️</a>
+                    <a href="#" aria-label="Facebook" title="Facebook">📘</a>
                 </div>
             </div>
         </div>`;
@@ -449,116 +569,50 @@
             : renderSkeletonCards(6);
 
         return `
-        <!-- ═══ HERO BANNER ═══ -->
+        <!-- ═══ HERO BANNER — بيج فاتح أنيق ═══ -->
         <section id="homeHeroBanner" class="hb-section">
 
             <!-- خلفية زخرفية -->
             <div class="hb-bg" aria-hidden="true">
                 <div class="hb-orb hb-orb-1"></div>
                 <div class="hb-orb hb-orb-2"></div>
-                <span class="hb-float hb-f1">💡 أفكار</span>
-                <span class="hb-float hb-f2">🔑 أسرار النجاح</span>
-                <span class="hb-float hb-f3">🎯 تفوّق</span>
-                <span class="hb-float hb-f4">📚 معرفة</span>
-                <span class="hb-float hb-f5">✨ إبداع</span>
-                <span class="hb-float hb-f6">🚀 انطلاقة جديدة</span>
+                <span class="hb-float hb-f1">🧬 DNA</span>
+                <span class="hb-float hb-f2">RNA</span>
+                <span class="hb-float hb-f3">O₂ ⇌ CO₂</span>
+                <span class="hb-float hb-f4">🔬 Cell</span>
+                <span class="hb-float hb-f5">ATP</span>
+                <span class="hb-float hb-f6">Mitosis</span>
             </div>
 
             <div class="hb-container">
                 <div class="hb-body">
 
-                    <!-- النصوص والأزرار -->
-                    <div class="hb-text-side">
-                        <div class="hb-pills">
-                            <span class="hb-pill">🎓 كورسات متنوعة</span>
-                            <span class="hb-pill">👨‍🏫 نخبة من المدرسين</span>
-                            <span class="hb-pill">📱 تعلّم في أي وقت</span>
-                        </div>
+                    <!-- Photo Side -->
+                    <div class="hb-img-side">
                         <h1 class="hb-heading">
-                            <span class="hb-h-prefix">منصتك التعليمية الأولى</span>
-                            <span class="hb-h-name">أفكار وأسرار</span>
-                            <span class="hb-h-suffix">كل فكرة بتفتحلك سرّ تفوّق جديد</span>
+                            <span class="hb-h-prefix">Biology with</span>
+                            <span class="hb-h-name">Mr. Islam Abdelwahed</span>
+                            <span class="hb-h-suffix">Secondary &amp; Preparatory</span>
                         </h1>
-                        <p class="hb-desc">منصة تعليمية شاملة تجمع لك أفضل الشروحات والمدرسين ومحتوى تفاعلي مصمَّم خصيصًا يساعدك على الفهم العميق وتحقيق أعلى الدرجات.</p>
-                        <div class="hb-btns">
-                            <a href="#register" class="hb-btn-orange">
-                                <span>✨ أنشئ حسابك الآن</span>
-                                <span class="hb-arrow">←</span>
-                            </a>
-                            <a href="#courses" class="hb-btn-green">
-                                <span>📚 استكشف الكورسات</span>
-                            </a>
+                        <div class="hb-img-frame">
+                            <div class="hb-img-glow" aria-hidden="true"></div>
+                            <img src="hero-cell-portrait.jpg?v=20260923" alt="Mr. Islam Abdelwahed" class="hb-img" loading="eager" onerror="this.src='teacher-new.jpg'">
+                            <div class="hb-img-caption">
+                                <span class="hb-img-badge">🧬 Biology Teacher</span>
+                            </div>
                         </div>
                     </div>
 
-                    <!-- الرسم التوضيحي -->
-                    <div class="hb-img-side">
-                        <div class="hb-illustration" aria-hidden="true">
-                            <svg viewBox="0 0 420 420" xmlns="http://www.w3.org/2000/svg" class="hb-illu-svg">
-                                <defs>
-                                    <linearGradient id="hbBulbGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                                        <stop offset="0%" stop-color="#FCD34D"/>
-                                        <stop offset="100%" stop-color="#F59E0B"/>
-                                    </linearGradient>
-                                    <linearGradient id="hbCardGrad1" x1="0%" y1="0%" x2="100%" y2="100%">
-                                        <stop offset="0%" stop-color="#8B5CF6"/>
-                                        <stop offset="100%" stop-color="#6D28D9"/>
-                                    </linearGradient>
-                                    <linearGradient id="hbCardGrad2" x1="0%" y1="0%" x2="100%" y2="100%">
-                                        <stop offset="0%" stop-color="#A780F5"/>
-                                        <stop offset="100%" stop-color="#7C3AED"/>
-                                    </linearGradient>
-                                    <radialGradient id="hbGlow" cx="50%" cy="45%" r="55%">
-                                        <stop offset="0%" stop-color="#FCD34D" stop-opacity="0.55"/>
-                                        <stop offset="100%" stop-color="#FCD34D" stop-opacity="0"/>
-                                    </radialGradient>
-                                </defs>
-
-                                <!-- توهج خلفي -->
-                                <circle cx="210" cy="190" r="170" fill="url(#hbGlow)" class="hb-illu-pulse"/>
-
-                                <!-- المنصّة الدائرية -->
-                                <ellipse cx="210" cy="350" rx="150" ry="16" fill="#000" opacity="0.06"/>
-
-                                <!-- كارت كورس عائم يمين -->
-                                <g class="hb-illu-float hb-illu-float-a">
-                                    <rect x="288" y="120" width="98" height="72" rx="16" fill="url(#hbCardGrad1)"/>
-                                    <rect x="304" y="138" width="46" height="8" rx="4" fill="#fff" opacity="0.9"/>
-                                    <rect x="304" y="152" width="66" height="6" rx="3" fill="#fff" opacity="0.55"/>
-                                    <rect x="304" y="164" width="34" height="6" rx="3" fill="#fff" opacity="0.55"/>
-                                    <text x="366" y="146" text-anchor="middle" font-size="18">🎓</text>
-                                </g>
-
-                                <!-- كارت درجات عائم يسار -->
-                                <g class="hb-illu-float hb-illu-float-b">
-                                    <rect x="30" y="210" width="104" height="66" rx="16" fill="url(#hbCardGrad2)"/>
-                                    <text x="52" y="250" text-anchor="middle" font-size="20">⭐</text>
-                                    <rect x="70" y="232" width="52" height="7" rx="3.5" fill="#fff" opacity="0.9"/>
-                                    <rect x="70" y="246" width="36" height="6" rx="3" fill="#fff" opacity="0.55"/>
-                                </g>
-
-                                <!-- شارة نخبة مدرسين -->
-                                <g class="hb-illu-float hb-illu-float-c">
-                                    <circle cx="330" cy="290" r="15" fill="#fff" stroke="#8B5CF6" stroke-width="2"/>
-                                    <text x="330" y="296" text-anchor="middle" font-size="15">👩‍🏫</text>
-                                    <circle cx="356" cy="278" r="12" fill="#fff" stroke="#F59E0B" stroke-width="2"/>
-                                    <text x="356" y="283" text-anchor="middle" font-size="12">👨‍🏫</text>
-                                </g>
-
-                                <!-- اللمبة المركزية (فكرة) -->
-                                <g class="hb-illu-bulb">
-                                    <line x1="210" y1="120" x2="210" y2="96" stroke="url(#hbBulbGrad)" stroke-width="7" stroke-linecap="round"/>
-                                    <line x1="150" y1="150" x2="132" y2="132" stroke="url(#hbBulbGrad)" stroke-width="7" stroke-linecap="round"/>
-                                    <line x1="270" y1="150" x2="288" y2="132" stroke="url(#hbBulbGrad)" stroke-width="7" stroke-linecap="round"/>
-                                    <circle cx="210" cy="200" r="78" fill="url(#hbBulbGrad)"/>
-                                    <rect x="178" y="266" width="64" height="20" rx="7" fill="url(#hbBulbGrad)"/>
-                                    <rect x="184" y="288" width="52" height="16" rx="7" fill="url(#hbBulbGrad)"/>
-                                    <rect x="191" y="306" width="38" height="13" rx="6.5" fill="url(#hbBulbGrad)"/>
-                                    <!-- ثقب السر -->
-                                    <circle cx="210" cy="180" r="17" fill="#150E29"/>
-                                    <path d="M 199 192 L 221 192 L 213 226 L 207 226 Z" fill="#150E29"/>
-                                </g>
-                            </svg>
+                    <!-- الأزرار — يمين -->
+                    <div class="hb-text-side">
+                        <div class="hb-btns">
+                            <a href="#register" class="hb-btn-orange">
+                                <span>✨ Create Account Now</span>
+                                <span class="hb-arrow">→</span>
+                            </a>
+                            <a href="#courses" class="hb-btn-green">
+                                <span>📚 Explore Courses</span>
+                            </a>
                         </div>
                     </div>
 
@@ -570,25 +624,25 @@
         <section class="page-section home-courses-section" id="courses-section">
             <div class="container">
                 <div class="home-courses-header">
-                    <span class="section-badge"><span class="icon">📚</span> الكورسات المتاحة</span>
-                    <h2 class="section-title">كورسات المنصة</h2>
+                    <span class="section-badge"><span class="icon">📚</span> Available Courses</span>
+                    <h2 class="section-title">Platform Courses</h2>
 
                     <!-- Search & Filters -->
                     <div class="home-search-box">
                         <span class="home-search-icon">🔍</span>
-                        <input type="text" class="home-search-input" id="homeCourseSearch" placeholder="ابحث باسم الكورس أو الصف الدراسي..." oninput="handleHomeSearch(this.value)">
+                        <input type="text" class="home-search-input" id="homeCourseSearch" placeholder="Search by course name or grade..." oninput="handleHomeSearch(this.value)">
                     </div>
 
                     <div class="filter-chips">
-                        <button class="filter-chip active" data-grade="الكل" onclick="filterHomeStage('الكل', this)">الكل</button>
-                        <button class="filter-chip" data-grade="أولى ثانوي" onclick="filterHomeStage('أولى ثانوي', this)">أولى ثانوي</button>
-                        <button class="filter-chip" data-grade="تانية ثانوي" onclick="filterHomeStage('تانية ثانوي', this)">تانية ثانوي</button>
-                        <button class="filter-chip" data-grade="تالتة ثانوي" onclick="filterHomeStage('تالتة ثانوي', this)">تالتة ثانوي</button>
-                        <button class="filter-chip" data-grade="بكالوريا عام برمجة" onclick="filterHomeStage('بكالوريا عام برمجة', this)">بكالوريا</button>
-                        <button class="filter-chip" data-grade="أولى إعدادي" onclick="filterHomeStage('أولى إعدادي', this)">أولى إعدادي</button>
-                        <button class="filter-chip" data-grade="تانية إعدادي" onclick="filterHomeStage('تانية إعدادي', this)">تانية إعدادي</button>
-                        <button class="filter-chip" data-grade="تالتة إعدادي" onclick="filterHomeStage('تالتة إعدادي', this)">تالتة إعدادي</button>
-                        <button class="filter-chip" data-grade="مجاني" onclick="filterHomeStage('مجاني', this)">🎁 مجاني</button>
+                        <button class="filter-chip active" data-grade="الكل" onclick="filterHomeStage('الكل', this)">All</button>
+                        <button class="filter-chip" data-grade="أولى ثانوي" onclick="filterHomeStage('أولى ثانوي', this)">1st Sec</button>
+                        <button class="filter-chip" data-grade="تانية ثانوي" onclick="filterHomeStage('تانية ثانوي', this)">2nd Sec</button>
+                        <button class="filter-chip" data-grade="تالتة ثانوي" onclick="filterHomeStage('تالتة ثانوي', this)">3rd Sec</button>
+                        <button class="filter-chip" data-grade="بكالوريا عام برمجة" onclick="filterHomeStage('بكالوريا عام برمجة', this)">Baccalaureate</button>
+                        <button class="filter-chip" data-grade="أولى إعدادي" onclick="filterHomeStage('أولى إعدادي', this)">1st Prep</button>
+                        <button class="filter-chip" data-grade="تانية إعدادي" onclick="filterHomeStage('تانية إعدادي', this)">2nd Prep</button>
+                        <button class="filter-chip" data-grade="تالتة إعدادي" onclick="filterHomeStage('تالتة إعدادي', this)">3rd Prep</button>
+                        <button class="filter-chip" data-grade="مجاني" onclick="filterHomeStage('مجاني', this)">🎁 Free</button>
                     </div>
                 </div>
 
@@ -598,8 +652,8 @@
 
                 <div class="empty-state" id="homeCoursesEmpty" style="display:none;margin-top:var(--space-xl);">
                     <div class="empty-state-icon">🔍</div>
-                    <h3>لا توجد كورسات مطابقة</h3>
-                    <p>جرّب البحث بكلمة مختلفة أو اختر صفًا دراسيًا آخر.</p>
+                    <h3>No Matching Courses</h3>
+                    <p>Try searching with another keyword or selecting a different grade.</p>
                 </div>
             </div>
         </section>
@@ -607,9 +661,9 @@
         <!-- Features / Why Choose Us -->
         <section class="page-section" id="features-section">
             <div class="container text-center">
-                <span class="section-badge"><span class="icon">✨</span> ليه أفكار وأسرار؟</span>
-                <h2 class="section-title">كل اللي محتاجه عشان الدرجة النهائية والتفوّق</h2>
-                <p class="section-subtitle">بيئة تعليمية متكاملة مصمَّمة لمساعدتك تتفوّق بأعلى كفاءة ممكنة.</p>
+                <span class="section-badge"><span class="icon">✨</span> Why Mr. Islam Abdelwahed?</span>
+                <h2 class="section-title">Everything You Need for Full Marks &amp; Excellence</h2>
+                <p class="section-subtitle">A comprehensive learning environment tailored to help you excel with maximum efficiency.</p>
                 <div class="features-grid">
                     ${FEATURES_DATA.map((f, i) => `
                         <div class="feature-card reveal reveal-delay-${(i % 3) + 1}">
@@ -625,27 +679,27 @@
         <!-- 3-Step Roadmap -->
         <section class="page-section" style="background:var(--bg-alt);">
             <div class="container text-center">
-                <span class="section-badge"><span class="icon">🚀</span> بداية سهلة</span>
-                <h2 class="section-title">ابدأ رحلتك في 3 خطوات بسيطة</h2>
-                <p class="section-subtitle">خطوات سريعة وسهلة عشان تبدأ في دقايق معدودة.</p>
+                <span class="section-badge"><span class="icon">🚀</span> Easy Start</span>
+                <h2 class="section-title">How to Start Your Journey in 3 Steps</h2>
+                <p class="section-subtitle">Simple and fast steps to get started in just a few minutes.</p>
                 <div class="steps-grid">
                     <div class="step-card reveal">
                         <div class="step-badge">1</div>
                         <div class="step-icon">👤</div>
-                        <h3>أنشئ حسابك مجانًا</h3>
-                        <p>سجّل اسمك ورقم هاتفك وصفّك الدراسي في أقل من دقيقة.</p>
+                        <h3>Create Free Account</h3>
+                        <p>Register your name, phone number, and grade level in under a minute.</p>
                     </div>
                     <div class="step-card reveal reveal-delay-1">
                         <div class="step-badge">2</div>
                         <div class="step-icon">🔑</div>
-                        <h3>اختر كورسك</h3>
-                        <p>تصفّح الكورسات، ابدأ بالكورس التأسيسي المجاني، أو فعّل كورس صفّك بالكود الخاص بيه.</p>
+                        <h3>Choose Your Course</h3>
+                        <p>Browse courses, start with the free foundation course, or activate your grade's course code.</p>
                     </div>
                     <div class="step-card reveal reveal-delay-2">
                         <div class="step-badge">3</div>
                         <div class="step-icon">🏆</div>
-                        <h3>تعلّم وتدرّب وتفوّق!</h3>
-                        <p>شاهد الشروحات، حل التمارين والاختبارات الإلكترونية، وحقّق الدرجة النهائية.</p>
+                        <h3>Learn, Practice &amp; Excel!</h3>
+                        <p>Watch lectures, solve exercises and online exams, and achieve the full mark.</p>
                     </div>
                 </div>
             </div>
@@ -658,23 +712,23 @@
                     <div class="teacher-visual">
                         <div class="teacher-avatar-circle">👨‍🏫</div>
                         <div class="teacher-name-badge">${SITE_CONFIG.teacher}</div>
-                        <div class="teacher-role-badge">خبير ومدرّس لغة إنجليزية للمرحلتين الثانوية والإعدادية</div>
+                        <div class="teacher-role-badge">Biology Expert &amp; Teacher for Secondary &amp; Preparatory</div>
                     </div>
                     <div class="teacher-content">
-                        <span class="section-badge"><span class="icon">⭐</span> أحد نخبة مدرّسينا</span>
-                        <h2>يخلّي الإنجليزي واضح وممتع وملهم</h2>
+                        <span class="section-badge"><span class="icon">⭐</span> Lead Instructor</span>
+                        <h2>Making Biology Clear, Intuitive &amp; Inspiring</h2>
                         <p>
-                            "رسالتي مش بس إني أشرح القواعد، لكن إني أبني ثقة حقيقية في اللغة — إزاي القواعد والمفردات بتشتغل مع بعض عشان الطالب يقرأ ويكتب ويتكلم بكل سهولة. وأنا فخور إني ساعدت طلاب كتير يوصلوا لأعلى الدرجات وطلاقة حقيقية في اللغة."
+                            "My core mission is not merely to help students memorize, but to build a true biological mindset that understands how living systems work and connects every concept to real life. Over 15+ years, I have proudly guided thousands of students to top faculties and full marks."
                         </p>
                         <div class="teacher-pills">
-                            <div class="teacher-pill"><span>🏆</span> سنوات من الخبرة المتخصصة</div>
-                            <div class="teacher-pill"><span>🎯</span> أوائل على مستوى الجمهورية</div>
-                            <div class="teacher-pill"><span>📖</span> أسلوب مبسّط وحصري</div>
-                            <div class="teacher-pill"><span>⚡</span> متابعة شخصية للواجبات</div>
+                            <div class="teacher-pill"><span>🏆</span> 15+ Years Experience</div>
+                            <div class="teacher-pill"><span>🎯</span> Top Nationwide Ranks</div>
+                            <div class="teacher-pill"><span>🔬</span> Exclusive Simplified Method</div>
+                            <div class="teacher-pill"><span>⚡</span> Personal Homework Follow-up</div>
                         </div>
                         <div style="display:flex;gap:12px;flex-wrap:wrap;">
-                            <a href="#courses" class="btn btn-primary btn-lg">تصفّح الكورسات &larr;</a>
-                            <a href="https://wa.me/201000000000" target="_blank" rel="noopener" class="btn btn-outline btn-lg">💬 تواصل معنا</a>
+                            <a href="#courses" class="btn btn-primary btn-lg">Browse Courses &rarr;</a>
+                            <a href="https://wa.me/201000000000" target="_blank" rel="noopener" class="btn btn-outline btn-lg">💬 Contact Mr. Islam</a>
                         </div>
                     </div>
                 </div>
@@ -684,9 +738,9 @@
         <!-- Testimonials Section -->
         <section class="page-section" style="background:var(--bg-alt);">
             <div class="container text-center">
-                <span class="section-badge"><span class="icon">💬</span> آراء طلابنا</span>
-                <h2 class="section-title">إيه رأي طلابنا وأولياء الأمور؟</h2>
-                <p class="section-subtitle">قصص نجاح حقيقية لطلاب حوّلوا الإنجليزي لأقوى نقطة عندهم.</p>
+                <span class="section-badge"><span class="icon">💬</span> Student Reviews</span>
+                <h2 class="section-title">What Our Students &amp; Parents Say</h2>
+                <p class="section-subtitle">Real success stories of students who turned Biology into their greatest strength.</p>
                 <div class="testimonials-grid">
                     ${TESTIMONIALS_DATA.map((t, i) => `
                         <div class="testimonial-card reveal reveal-delay-${(i % 3) + 1}">
@@ -708,9 +762,9 @@
         <!-- FAQ Section -->
         <section class="page-section" id="faq-section">
             <div class="container text-center">
-                <span class="section-badge"><span class="icon">❓</span> مساعدة ومعلومات</span>
-                <h2 class="section-title">الأسئلة الشائعة</h2>
-                <p class="section-subtitle">كل اللي محتاج تعرفه عن التسجيل وتفعيل الكورسات واستخدام المنصة.</p>
+                <span class="section-badge"><span class="icon">❓</span> Help &amp; Info</span>
+                <h2 class="section-title">Frequently Asked Questions</h2>
+                <p class="section-subtitle">Everything you need to know about registration, course activation, and using the platform.</p>
                 <div class="faq-grid">
                     ${FAQ_DATA.map((faq, idx) => `
                         <div class="faq-item ${idx === 0 ? 'open' : ''}" id="faq-item-${idx}">
@@ -730,24 +784,44 @@
         <!-- Final CTA Banner -->
         <section class="cta-section">
             <div class="container text-center">
-                <h2 class="reveal">جاهز تتفوّق مع منصة أفكار وأسرار؟</h2>
-                <p class="reveal reveal-delay-1">انضم لآلاف الطلاب واستمتع برحلة تعلّم ممتعة بتفرق فعلاً في مستواك.</p>
+                <h2 class="reveal">Ready to Excel in Biology with Mr. Islam Abdelwahed?</h2>
+                <p class="reveal reveal-delay-1">Join thousands of students and experience an engaging learning journey that makes all the difference.</p>
                 <div style="display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-top:var(--space-xl);">
                     ${isLoggedIn ? `
-                        <a href="#dashboard" class="btn btn-accent btn-xl reveal reveal-delay-2">📊 اذهب للوحة التحكم &larr;</a>
-                        <a href="#courses" class="btn btn-outline btn-xl reveal reveal-delay-2" style="border-color:#fff;color:#fff;">📚 استكشف الكورسات</a>
+                        <a href="#dashboard" class="btn btn-accent btn-xl reveal reveal-delay-2">📊 Go to Dashboard &rarr;</a>
+                        <a href="#courses" class="btn btn-outline btn-xl reveal reveal-delay-2" style="border-color:#fff;color:#fff;">📚 Explore Courses</a>
                     ` : `
-                        <a href="#register" class="btn btn-accent btn-xl reveal reveal-delay-2" id="ctaBannerRegisterBtn">✨ أنشئ حسابك المجاني الآن &larr;</a>
-                        <a href="#login" class="btn btn-outline btn-xl reveal reveal-delay-2" style="border-color:#fff;color:#fff;">🔑 تسجيل الدخول</a>
+                        <a href="#register" class="btn btn-accent btn-xl reveal reveal-delay-2" id="ctaBannerRegisterBtn">✨ Create Free Account Now &rarr;</a>
+                        <a href="#login" class="btn btn-outline btn-xl reveal reveal-delay-2" style="border-color:#fff;color:#fff;">🔑 Sign In</a>
                     `}
                 </div>
             </div>
         </section>
 
+        <!-- Instructor Signature Banner -->
+        <section class="instructor-banner-section">
+            <div class="container">
+                <div class="instructor-banner-eyebrow reveal">
+                    <span class="instructor-banner-badge">🧬 هوية المنصة</span>
+                </div>
+                <div class="instructor-banner-card reveal reveal-delay-1">
+                    <svg class="ibs-dna ibs-dna-left" viewBox="0 0 120 400" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M20,10 C20,60 100,60 100,110 C100,160 20,160 20,210 C20,260 100,260 100,310 C100,360 20,360 20,390" stroke="#34D399" stroke-width="3" fill="none" opacity="0.5"/>
+                        <path d="M100,10 C100,60 20,60 20,110 C20,160 100,160 100,210 C100,260 20,260 20,310 C20,360 100,360 100,390" stroke="#5EEAD4" stroke-width="3" fill="none" opacity="0.5"/>
+                    </svg>
+                    <img src="instructor-banner.jpg?v=20260921" alt="الخلية — أ/ إسلام عبدالواحد — معا نحو القمة" class="instructor-banner-img" loading="lazy">
+                    <svg class="ibs-dna ibs-dna-right" viewBox="0 0 120 400" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M20,10 C20,60 100,60 100,110 C100,160 20,160 20,210 C20,260 100,260 100,310 C100,360 20,360 20,390" stroke="#5EEAD4" stroke-width="3" fill="none" opacity="0.5"/>
+                        <path d="M100,10 C100,60 20,60 20,110 C20,160 100,160 100,210 C100,260 20,260 20,310 C20,360 100,360 100,390" stroke="#34D399" stroke-width="3" fill="none" opacity="0.5"/>
+                    </svg>
+                </div>
+            </div>
+        </section>
+
         <!-- Floating WhatsApp Support Button -->
-        <a href="https://wa.me/201000000000" target="_blank" rel="noopener" class="floating-support-btn" title="تواصل معنا عبر واتساب">
+        <a href="https://wa.me/201000000000" target="_blank" rel="noopener" class="floating-support-btn" title="Contact us via WhatsApp">
             <span class="floating-support-icon">💬</span>
-            <span>تواصل مع الدعم</span>
+            <span>Contact Support</span>
         </a>
         `;
     }
@@ -765,18 +839,18 @@
         <div style="padding-top:calc(var(--header-height) + var(--space-2xl));padding-bottom:var(--space-3xl);">
             <div class="container">
                 <div class="text-center" style="margin-bottom:var(--space-2xl);">
-                    <span class="section-badge"><span class="icon">📚</span> الكورسات</span>
-                    <h2 class="section-title">كل الكورسات المتاحة</h2>
-                    <p class="section-subtitle">اختر صفّك الدراسي واستكشف الكورسات المتاحة ليك.</p>
+                    <span class="section-badge"><span class="icon">📚</span> Courses</span>
+                    <h2 class="section-title">All Available Courses</h2>
+                    <p class="section-subtitle">Choose your grade level and explore courses available for you.</p>
                 </div>
                 <div class="courses-filter-bar">
                     <div class="filter-search">
                         <span class="search-icon">🔍</span>
-                        <input type="text" id="courseSearchInput" placeholder="ابحث عن كورس..." oninput="filterCourses()">
+                        <input type="text" id="courseSearchInput" placeholder="Search for a course..." oninput="filterCourses()">
                     </div>
                     <div class="filter-chips" id="filterChips">
                         ${grades.map((g, i) => `
-                            <button class="filter-chip ${i === 0 ? 'active' : ''}" data-grade="${g}" onclick="filterByGrade('${g}', this)">${g === 'الكل' || g === 'All' ? 'الكل' : g}</button>
+                            <button class="filter-chip ${i === 0 ? 'active' : ''}" data-grade="${g}" onclick="filterByGrade('${g}', this)">${g === 'الكل' ? 'All' : g}</button>
                         `).join('')}
                     </div>
                 </div>
@@ -785,8 +859,8 @@
                 </div>
                 <div class="empty-state" id="coursesEmpty" style="display:none;">
                     <div class="empty-state-icon">🔍</div>
-                    <h3>لا توجد نتائج</h3>
-                    <p>جرّب تغيير كلمة البحث أو فلتر الصف الدراسي.</p>
+                    <h3>No Results Found</h3>
+                    <p>Try changing your search keyword or grade filter.</p>
                 </div>
             </div>
         </div>`;
@@ -800,17 +874,17 @@
             id => String(id) === String(course.id)
         );
 
-        let actionBtnText = '← ادخل الكورس';
+        let actionBtnText = 'Enter Course →';
         let actionBtnClass = 'btn-primary';
 
         if (course.isFree) {
-            actionBtnText = '🎁 ابدأ مجانًا';
+            actionBtnText = '🎁 Start Free';
             actionBtnClass = 'btn-accent';
         } else if (isEnrolled) {
-            actionBtnText = '▶️ أكمل الكورس';
+            actionBtnText = '▶️ Continue Course';
             actionBtnClass = 'btn-primary';
         } else {
-            actionBtnText = '🔓 فعّل الكورس';
+            actionBtnText = '🔓 Activate Course';
             actionBtnClass = 'btn-primary';
         }
 
@@ -834,8 +908,8 @@
                 ${imageContent}
                 <div class="pcc-overlay"></div>
                 <div class="pcc-top-badges">
-                    <span class="pcc-badge ${course.isFree ? 'pcc-badge-free' : 'pcc-badge-grade'}">${course.isFree ? '🎁 مجاني' : course.gradeTag}</span>
-                    ${isEnrolled ? '<span class="pcc-badge pcc-badge-enrolled">✅ مشترك</span>' : ''}
+                    <span class="pcc-badge ${course.isFree ? 'pcc-badge-free' : 'pcc-badge-grade'}">${course.isFree ? '🎁 Free' : course.gradeTag}</span>
+                    ${isEnrolled ? '<span class="pcc-badge pcc-badge-enrolled">✅ Enrolled</span>' : ''}
                 </div>
                 <div class="pcc-rating-chip">⭐ ${course.rating || 5.0}</div>
             </div>
@@ -845,12 +919,12 @@
                 <div class="pcc-grade-line">📌 ${course.grade || gradeKey}${course.term ? ' — ' + course.term : ''}</div>
                 <h3 class="pcc-title">${course.title}</h3>
                 <div class="pcc-meta-row">
-                    <span class="pcc-meta-chip">📚 ${course.lessonsCount || 0} درس</span>
+                    <span class="pcc-meta-chip">📚 ${course.lessonsCount || 0} Lessons</span>
                     <span class="pcc-meta-chip">⏱️ ${course.duration || '—'}</span>
                 </div>
                 <div class="pcc-footer">
                     <div class="pcc-price ${course.isFree ? 'pcc-price-free' : ''}">
-                        ${course.isFree ? 'مجاني 🎁' : course.price + ' <span class="pcc-currency">' + (course.currency || 'جنيه') + '</span>'}
+                        ${course.isFree ? 'Free 🎁' : course.price + ' <span class="pcc-currency">' + (course.currency || 'EGP') + '</span>'}
                     </div>
                     <button class="pcc-action-btn pcc-action-${course.isFree ? 'free' : (isEnrolled ? 'enrolled' : 'lock')}" onclick="event.stopPropagation(); openCourse('${course.id}')">
                         ${actionBtnText}
@@ -899,7 +973,7 @@
             }));
             return Object.assign({}, pkg, {
                 lessons: cleanLessons,
-                title: pkg.title || ('الدرس ' + (pi + 1))
+                title: pkg.title || ('Lesson ' + (pi + 1))
             });
         }).filter(pkg => pkg.lessons.length > 0);
     }
@@ -938,41 +1012,41 @@
                     <p class="course-desc-hero">${course.description}</p>
                     <div class="course-details-meta">
                         <span class="course-detail-meta-item"><span class="icon">👨‍🏫</span> ${SITE_CONFIG.teacher}</span>
-                        <span class="course-detail-meta-item"><span class="icon">📚</span> ${allLessons.length} درس</span>
+                        <span class="course-detail-meta-item"><span class="icon">📚</span> ${allLessons.length} Lessons</span>
                         <span class="course-detail-meta-item"><span class="icon">⏱️</span> ${course.duration}</span>
-                        <span class="course-detail-meta-item"><span class="icon">👨‍🎓</span> ${course.studentsCount} طالب</span>
+                        <span class="course-detail-meta-item"><span class="icon">👨‍🎓</span> ${course.studentsCount} Students</span>
                         <span class="course-detail-meta-item"><span class="icon">⭐</span> ${course.rating}</span>
                     </div>
                 </div>
                 <div class="course-sidebar-card">
                     <div class="price-section">
                         <div class="price-big ${course.isFree ? 'course-price-free' : ''}">
-                            ${course.isFree ? 'مجاني' : course.price + ' <span class="currency">' + course.currency + '</span>'}
+                            ${course.isFree ? 'Free' : course.price + ' <span class="currency">' + course.currency + '</span>'}
                         </div>
                         <button class="btn btn-accent btn-block btn-lg" onclick="openCourse('${course.id}')">
-                            ${course.isFree ? 'ابدأ مجانًا الآن' : 'ادخل الكورس'}
+                            ${course.isFree ? 'Start Free Now' : 'Enter Course'}
                         </button>
                     </div>
                     <div class="sidebar-details">
                         <div class="sidebar-detail-row">
-                            <span class="label">📚 إجمالي الدروس</span>
-                            <span class="value">${allLessons.length} درس</span>
+                            <span class="label">📚 Total Lessons</span>
+                            <span class="value">${allLessons.length} Lessons</span>
                         </div>
                         <div class="sidebar-detail-row">
-                            <span class="label">⏱️ المدة</span>
+                            <span class="label">⏱️ Duration</span>
                             <span class="value">${course.duration}</span>
                         </div>
                         <div class="sidebar-detail-row">
-                            <span class="label">📊 الصف الدراسي</span>
+                            <span class="label">📊 Grade Level</span>
                             <span class="value">${course.gradeTag}</span>
                         </div>
                         <div class="sidebar-detail-row">
-                            <span class="label">🎓 شهادة إتمام</span>
-                            <span class="value">متاحة</span>
+                            <span class="label">🎓 Certificate</span>
+                            <span class="value">Available</span>
                         </div>
                         <div class="sidebar-detail-row">
-                            <span class="label">📱 مدة الوصول</span>
-                            <span class="value">الترم بالكامل</span>
+                            <span class="label">📱 Access</span>
+                            <span class="value">Full Term</span>
                         </div>
                     </div>
                 </div>
@@ -982,22 +1056,22 @@
         <section class="course-content-section">
             <div class="container">
                 <div class="course-tabs" id="courseTabs">
-                    <button class="course-tab active" data-tab="curriculum" onclick="switchCourseTab('curriculum', this)">المنهج</button>
-                    <button class="course-tab" data-tab="overview" onclick="switchCourseTab('overview', this)">نظرة عامة</button>
-                    <button class="course-tab" data-tab="reviews" onclick="switchCourseTab('reviews', this)">التقييمات</button>
+                    <button class="course-tab active" data-tab="curriculum" onclick="switchCourseTab('curriculum', this)">Curriculum</button>
+                    <button class="course-tab" data-tab="overview" onclick="switchCourseTab('overview', this)">Overview</button>
+                    <button class="course-tab" data-tab="reviews" onclick="switchCourseTab('reviews', this)">Reviews</button>
                 </div>
 
                 <div id="tab-curriculum">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-lg);">
-                        <h3>${effectivePackages.length} وحدة رئيسية - ${allLessons.length} موضوع</h3>
-                        <span class="badge badge-primary">${completedCount} / ${allLessons.length || 1} مكتمل</span>
+                        <h3>${effectivePackages.length} Main Units - ${allLessons.length} Topics</h3>
+                        <span class="badge badge-primary">${completedCount} / ${allLessons.length || 1} Completed</span>
                     </div>
                     ${effectivePackages.map((pkg, pi) => `
                         <div class="curriculum-package">
                             <div class="package-header ${pi === 0 ? 'open' : ''}" onclick="togglePackage(this)">
                                 <h4>📦 ${pkg.title}</h4>
                                 <div style="display:flex;align-items:center;gap:12px;">
-                                    <span class="lesson-count">${pkg.lessons.length} موضوع</span>
+                                    <span class="lesson-count">${pkg.lessons.length} Topics</span>
                                     <span class="toggle-icon">▼</span>
                                 </div>
                             </div>
@@ -1009,7 +1083,7 @@
                                         </div>
                                         <div class="lesson-info">
                                             <div class="lesson-title">${lesson.title}</div>
-                                            <div class="lesson-meta">${lesson.type === 'video' ? 'فيديو' : lesson.type === 'quiz' ? 'اختبار' : 'ملف PDF'} - ${lesson.duration}</div>
+                                            <div class="lesson-meta">${lesson.type === 'video' ? 'Video' : lesson.type === 'quiz' ? 'Exam' : 'PDF File'} - ${lesson.duration}</div>
                                         </div>
                                         <span class="lesson-status ${lesson.isCompleted ? 'completed' : lesson.isLocked ? 'locked' : ''}">
                                             ${lesson.isCompleted ? '✅' : lesson.isLocked ? '🔒' : 'O'}
@@ -1023,14 +1097,14 @@
 
                 <div id="tab-overview" style="display:none;">
                     <div class="card card-flat" style="padding:var(--space-xl);">
-                        <h3 style="margin-bottom:var(--space-md);">عن الكورس</h3>
+                        <h3 style="margin-bottom:var(--space-md);">About This Course</h3>
                         <p style="line-height:2;margin-bottom:var(--space-lg);">${course.description}</p>
-                        <h4 style="margin-bottom:var(--space-md);">هتتعلم إيه في الكورس ده</h4>
+                        <h4 style="margin-bottom:var(--space-md);">What You Will Learn</h4>
                         <ul style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-                            <li style="display:flex;align-items:center;gap:8px;font-size:0.92rem;">✅ فهم المفاهيم الأساسية بعمق</li>
-                            <li style="display:flex;align-items:center;gap:8px;font-size:0.92rem;">✅ أساليب منظّمة لحل المسائل</li>
-                            <li style="display:flex;align-items:center;gap:8px;font-size:0.92rem;">✅ تدريب حقيقي على الامتحانات وباختبارات زمنية</li>
-                            <li style="display:flex;align-items:center;gap:8px;font-size:0.92rem;">✅ مراجعة نهائية شاملة لآخر الترم</li>
+                            <li style="display:flex;align-items:center;gap:8px;font-size:0.92rem;">✅ Understand core biological concepts</li>
+                            <li style="display:flex;align-items:center;gap:8px;font-size:0.92rem;">✅ Systematic problem-solving techniques</li>
+                            <li style="display:flex;align-items:center;gap:8px;font-size:0.92rem;">✅ Real exam practice &amp; timed tests</li>
+                            <li style="display:flex;align-items:center;gap:8px;font-size:0.92rem;">✅ Comprehensive final term revision</li>
                         </ul>
                     </div>
                 </div>
@@ -1038,7 +1112,7 @@
                 <div id="tab-reviews" style="display:none;">
                     <div class="testimonials-grid" style="grid-template-columns:1fr;">
                         ${TESTIMONIALS_DATA.slice(0, 3).map(t => `
-                            <div class="testimonial-card" style="text-align:right;">
+                            <div class="testimonial-card" style="text-align:left;">
                                 <div class="testimonial-stars">${'★'.repeat(t.rating)}${'☆'.repeat(5 - t.rating)}</div>
                                 <p class="testimonial-text">"${t.text}"</p>
                                 <div class="testimonial-author">
@@ -1086,10 +1160,10 @@
             <div style="padding-top:calc(var(--header-height) + var(--space-3xl));min-height:75vh;display:flex;align-items:center;justify-content:center;">
                 <div style="text-align:center;padding:36px 32px;background:var(--bg-surface);border-radius:24px;border:1px solid var(--border);box-shadow:0 12px 36px rgba(0,0,0,0.08);max-width:460px;margin:0 16px;">
                     <div style="font-size:3.2rem;margin-bottom:14px;">🚀</div>
-                    <h3 style="font-size:1.35rem;font-weight:900;margin-bottom:8px;color:var(--text-primary);">جاري فتح الدرس الأول...</h3>
-                    <p style="color:var(--text-secondary);font-size:0.92rem;margin-bottom:24px;line-height:1.7;">أنت مشترك في هذا الكورس. جاري تجهيز مشغّل الدرس الآن.</p>
+                    <h3 style="font-size:1.35rem;font-weight:900;margin-bottom:8px;color:var(--text-primary);">Opening the first lesson...</h3>
+                    <p style="color:var(--text-secondary);font-size:0.92rem;margin-bottom:24px;line-height:1.7;">You are enrolled in this course. Preparing the lesson player now.</p>
                     <a href="#lesson/${courseId}/${firstLessonId}" class="btn btn-primary btn-lg btn-block" style="display:inline-flex;align-items:center;justify-content:center;gap:8px;">
-                        <span>▶</span> ادخل الدرس الأول مباشرة
+                        <span>▶</span> Enter First Lesson Directly
                     </a>
                 </div>
             </div>`;
@@ -1102,26 +1176,26 @@
                 <!-- Course Header -->
                 <div class="license-course-header reveal" style="margin-bottom:var(--space-xl); background:var(--bg-surface); padding:28px 32px; border-radius:24px; border:1px solid var(--border); box-shadow:0 4px 24px rgba(0,0,0,0.04);">
                     <div class="license-course-meta">
-                        <a href="#courses" class="btn btn-ghost btn-sm" style="margin-bottom:var(--space-md); border:1px solid var(--border); border-radius:10px; font-weight:800;">&larr; الرجوع للكورسات</a>
+                        <a href="#courses" class="btn btn-ghost btn-sm" style="margin-bottom:var(--space-md); border:1px solid var(--border); border-radius:10px; font-weight:800;">&larr; Back to Courses</a>
 
                         <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
                             <span class="badge ${course.isFree ? 'badge-success' : 'badge-primary'}" style="padding:6px 14px; border-radius:8px; font-size:0.8rem; font-weight:900; letter-spacing:0.5px;">
-                                ${course.isFree ? '🎁 مجاني' : course.gradeTag}
+                                ${course.isFree ? '🎁 Free' : course.gradeTag}
                             </span>
                             ${course.term ? `<span class="badge badge-accent" style="padding:6px 14px; border-radius:8px; font-size:0.8rem; font-weight:900;">${course.term}</span>` : ''}
                         </div>
 
                         <h1 style="font-size:2.1rem; font-weight:900; color:var(--text-primary); margin-bottom:14px; line-height:1.3;">${course.title}</h1>
 
-                        <div style="background:var(--bg-alt); padding:16px 20px; border-radius:14px; border-left:4px solid var(--primary-500, #7C3AED); margin-bottom:22px;">
+                        <div style="background:var(--bg-alt); padding:16px 20px; border-radius:14px; border-left:4px solid var(--primary-500, #10B981); margin-bottom:22px;">
                             <p style="color:var(--text-secondary); font-size:1rem; line-height:1.85; margin:0; text-align:justify;">${course.description}</p>
                         </div>
 
                         <div class="course-details-meta" style="display:flex; flex-wrap:wrap; gap:12px;">
                             <span class="course-detail-meta-item" style="background:var(--bg-alt); padding:8px 14px; border-radius:10px; font-size:0.87rem; font-weight:700;"><span class="icon" style="margin-right:5px;">👨‍🏫</span> ${SITE_CONFIG.teacher}</span>
-                            <span class="course-detail-meta-item" style="background:var(--bg-alt); padding:8px 14px; border-radius:10px; font-size:0.87rem; font-weight:700;"><span class="icon" style="margin-right:5px;">📚</span> ${allLessons.length} موضوع</span>
+                            <span class="course-detail-meta-item" style="background:var(--bg-alt); padding:8px 14px; border-radius:10px; font-size:0.87rem; font-weight:700;"><span class="icon" style="margin-right:5px;">📚</span> ${allLessons.length} Topics</span>
                             <span class="course-detail-meta-item" style="background:var(--bg-alt); padding:8px 14px; border-radius:10px; font-size:0.87rem; font-weight:700;"><span class="icon" style="margin-right:5px;">⏱️</span> ${course.duration}</span>
-                            <span class="course-detail-meta-item" style="background:var(--bg-alt); padding:8px 14px; border-radius:10px; font-size:0.87rem; font-weight:700;"><span class="icon" style="margin-right:5px;">⭐</span> تقييم ${course.rating || 5.0}</span>
+                            <span class="course-detail-meta-item" style="background:var(--bg-alt); padding:8px 14px; border-radius:10px; font-size:0.87rem; font-weight:700;"><span class="icon" style="margin-right:5px;">⭐</span> ${course.rating || 5.0} Rating</span>
                         </div>
                     </div>
                 </div>
@@ -1134,8 +1208,8 @@
                     <div class="iq-prem-act-header">
                         <div class="iq-prem-act-lock">🔒</div>
                         <div class="iq-prem-act-header-text">
-                            <h3>الكورس ده محتاج تفعيل عشان توصل لكل المحاضرات</h3>
-                            <p>رسوم الاشتراك: <strong>${course.price || 0} ${course.currency || 'جنيه'}</strong> — اختر طريقة التفعيل:</p>
+                            <h3>This course requires activation to access all lectures</h3>
+                            <p>Subscription fee: <strong>${course.price || 0} ${course.currency || 'EGP'}</strong> — Choose your activation method:</p>
                         </div>
                     </div>
 
@@ -1147,21 +1221,21 @@
                             <div class="iq-prem-act-col-inner">
                                 <div class="iq-prem-opt-header">
                                     <span class="iq-prem-opt-icon">🔑</span>
-                                    <h4>عندك كود تفعيل؟ أدخله هنا</h4>
+                                    <h4>Have an activation code? Enter it here</h4>
                                 </div>
-                                <p class="iq-prem-opt-desc">لو اشتريت كود تفعيل من المركز أو فريق الدعم، أدخله تحت عشان يتفعّل فورًا.</p>
+                                <p class="iq-prem-opt-desc">If you purchased an activation code from the centre or support team, enter it below to activate immediately.</p>
                                 <div class="iq-prem-code-form">
                                     <input type="text"
                                            class="iq-prem-code-input"
                                            id="licenseCodeInput"
-                                           placeholder="أدخل كود التفعيل"
+                                           placeholder="Enter activation code"
                                            maxlength="12"
                                            dir="ltr"
                                            autocomplete="off"
                                            onkeydown="if(event.key==='Enter') activateLicenseCode('${courseId}')">
                                     <button class="iq-prem-code-btn" id="activateLicenseBtn"
                                             onclick="activateLicenseCode('${courseId}')">
-                                        فعّل الكود ✅
+                                        Activate Code ✅
                                     </button>
                                 </div>
                             </div>
@@ -1172,28 +1246,28 @@
                             <div class="iq-prem-act-col-inner">
                                 <div class="iq-prem-opt-header">
                                     <span class="iq-prem-opt-icon">💸</span>
-                                    <h4>معندكش كود؟ اطلب واحد</h4>
+                                    <h4>Don't have a code? Request one</h4>
                                 </div>
-                                <p class="iq-prem-opt-desc">حوّل الرسوم عن طريق فودافون كاش، وبعدين ابعت بياناتك عشان تستلم الكود فورًا.</p>
+                                <p class="iq-prem-opt-desc">Transfer the fee via Vodafone Cash, then send your details to receive the code instantly.</p>
 
                                 <div class="iq-prem-transfer-steps">
                                     <div class="iq-prem-step-row">
                                         <span class="iq-prem-step-num">1</span>
-                                        <span>حوّل الرسوم (<strong>${course.price || 0} جنيه</strong>) على الرقم:<br>
+                                        <span>Transfer fee (<strong>${course.price || 0} EGP</strong>) to:<br>
                                         <span class="iq-prem-vf-num"
-                                              onclick="navigator.clipboard && navigator.clipboard.writeText('01060976964').then(function(){ showToast('تم نسخ الرقم', 'success'); })"
-                                              title="اضغط للنسخ">📱 01060976964 <small>📋</small></span></span>
+                                              onclick="navigator.clipboard && navigator.clipboard.writeText('01220222307').then(function(){ showToast('Number copied', 'success'); })"
+                                              title="Click to copy">📱 01220222307 <small>📋</small></span></span>
                                     </div>
                                     <div class="iq-prem-step-row">
                                         <span class="iq-prem-step-num">2</span>
-                                        <span>اضغط تحت لتأكيد التحويل واستلام الكود عبر واتساب.</span>
+                                        <span>Click below to confirm transfer and receive your code via WhatsApp.</span>
                                     </div>
                                 </div>
 
                                 <button class="iq-prem-wa-btn"
                                         onclick="requestActivationWhatsApp('${courseId}', '${(course.title || '').replace(/'/g, "\\'")}', ${course.price || 0})">
                                     <span>💬</span>
-                                    اطلب الكود عبر واتساب
+                                    Request Code via WhatsApp
                                 </button>
                             </div>
                         </div>
@@ -1204,10 +1278,10 @@
                 <!-- Enrolled banner -->
                 <div class="iq-enrolled-banner reveal" style="margin-bottom:var(--space-2xl);">
                     <div style="font-size:3rem;margin-bottom:var(--space-xs);">🎉</div>
-                    <h2 style="font-size:1.4rem;font-weight:900;margin-bottom:var(--space-xs);color:var(--text-primary);">أنت مشترك في هذا الكورس!</h2>
-                    <p style="color:var(--text-secondary);margin-bottom:var(--space-lg);font-size:0.95rem;">كل المحاضرات والملفات والاختبارات متاحة ليك بالكامل.</p>
+                    <h2 style="font-size:1.4rem;font-weight:900;margin-bottom:var(--space-xs);color:var(--text-primary);">You are enrolled in this course!</h2>
+                    <p style="color:var(--text-secondary);margin-bottom:var(--space-lg);font-size:0.95rem;">All lectures, files, and exams are fully accessible.</p>
                     <button class="btn btn-primary btn-lg" onclick="navigate('lesson/${courseId}/${firstLessonId}')">
-                        ▶ ابدأ مشاهدة الدرس الأول
+                        ▶ Start Watching First Lesson
                     </button>
                 </div>
                 `}
@@ -1216,8 +1290,8 @@
                 <div style="margin-top:var(--space-xl);">
                     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-lg);gap:12px;flex-wrap:wrap;">
                         <div>
-                            <h2 style="margin:0 0 4px;font-size:1.4rem;font-weight:900;">📋 منهج الكورس</h2>
-                            <p style="margin:0;font-size:0.85rem;color:var(--text-muted);">${effectivePackages.reduce((t, p) => t + p.lessons.length, 0)} محاضرة · ${effectivePackages.length} وحدة</p>
+                            <h2 style="margin:0 0 4px;font-size:1.4rem;font-weight:900;">📋 Course Curriculum</h2>
+                            <p style="margin:0;font-size:0.85rem;color:var(--text-muted);">${effectivePackages.reduce((t, p) => t + p.lessons.length, 0)} Lectures · ${effectivePackages.length} Units</p>
                         </div>
                     </div>
                     <div class="license-accordion" id="licenseAccordion">
@@ -1232,8 +1306,8 @@
                                         <span>${pkg.title}</span>
                                     </div>
                                     <div class="accordion-pkg-meta">
-                                        <span>${completedInPkg}/${pkgLessons.length} مكتمل</span>
-                                        <span class="lesson-count">${pkgLessons.length} موضوع</span>
+                                        <span>${completedInPkg}/${pkgLessons.length} Completed</span>
+                                        <span class="lesson-count">${pkgLessons.length} Topics</span>
                                         <span class="accordion-pkg-arrow" id="acc-arrow-${pi}">▼</span>
                                     </div>
                                 </div>
@@ -1241,10 +1315,10 @@
                                     ${pkgLessons.map((lesson, li) => {
                 const canAccess = isFreeOrEnrolled || !lesson.isLocked;
                 const icon = lesson.isCompleted ? '✅' : !canAccess ? '🔒' : lesson.type === 'video' ? '▶️' : lesson.type === 'quiz' ? '📝' : '📄';
-                const typeLabel = lesson.type === 'video' ? '🎥 فيديو' : lesson.type === 'quiz' ? '📝 اختبار' : '📄 PDF';
+                const typeLabel = lesson.type === 'video' ? '🎥 Video' : lesson.type === 'quiz' ? '📝 Exam' : '📄 PDF';
                 return `
                                         <div class="accordion-lesson-item ${lesson.isCompleted ? 'completed' : ''} ${!canAccess ? 'locked' : ''}"
-                                             onclick="${canAccess ? "navigate('lesson/" + courseId + "/" + lesson.id + "')" : "showToast('هذا الدرس محتاج اشتراك فعّال. أكمل الدفع أو أدخل الكود فوق.', 'error')"}">
+                                             onclick="${canAccess ? "navigate('lesson/" + courseId + "/" + lesson.id + "')" : "showToast('This lesson requires active enrollment. Complete payment or enter code above.', 'error')"}">
                                             <div class="accordion-lesson-left">
                                                 <span class="accordion-lesson-num">${pi + 1}.${li + 1}</span>
                                                 <div class="accordion-lesson-icon">${icon}</div>
@@ -1258,10 +1332,10 @@
                                             </div>
                                             <div class="accordion-lesson-right">
                                                 ${lesson.isCompleted
-                        ? '<span class="badge badge-success" style="font-size:0.75rem;">✓ مكتمل</span>'
+                        ? '<span class="badge badge-success" style="font-size:0.75rem;">✓ Completed</span>'
                         : canAccess
-                            ? '<span class="badge" style="font-size:0.75rem;background:rgba(124, 58, 237,0.1);color:#7c3aed;border:1px solid rgba(124, 58, 237,0.2);">متاح</span>'
-                            : '<span class="badge" style="font-size:0.75rem;background:rgba(107, 98, 128,0.1);color:#6b6280;border:1px solid rgba(107, 98, 128,0.2);">🔒 مقفول</span>'}
+                            ? '<span class="badge" style="font-size:0.75rem;background:rgba(34, 67, 122,0.1);color:#22437A;border:1px solid rgba(34, 67, 122,0.2);">Available</span>'
+                            : '<span class="badge" style="font-size:0.75rem;background:rgba(95, 125, 106,0.1);color:#5F7D6A;border:1px solid rgba(95, 125, 106,0.2);">🔒 Locked</span>'}
                                             </div>
                                         </div>`;
             }).join('')}
@@ -1289,7 +1363,7 @@
             display: flex;
             align-items: flex-start;
             gap: 16px;
-            background: linear-gradient(135deg, var(--primary-500, #7C3AED) 0%, var(--primary-700, #5B21B6) 100%);
+            background: linear-gradient(135deg, var(--primary-500, #10B981) 0%, var(--primary-700, #047857) 100%);
             padding: 22px 28px;
             color: #fff;
         }
@@ -1341,8 +1415,8 @@
             gap: 16px;
         }
         .iq-prem-act-col--highlight {
-            background: linear-gradient(160deg, rgba(124, 58, 237,0.05) 0%, rgba(109, 40, 217,0.02) 100%);
-            border-left: 1px solid rgba(124, 58, 237,0.2);
+            background: linear-gradient(160deg, rgba(16, 185, 129,0.05) 0%, rgba(5, 150, 105,0.02) 100%);
+            border-left: 1px solid rgba(16, 185, 129,0.2);
         }
         .iq-prem-opt-header {
             display: flex;
@@ -1359,7 +1433,7 @@
             line-height: 1.3;
         }
         .iq-prem-act-col--highlight .iq-prem-opt-header h4 {
-            color: #059669;
+            color: #0D9488;
         }
         .iq-prem-opt-desc {
             font-size: 0.87rem;
@@ -1392,11 +1466,11 @@
             outline: none;
         }
         .iq-prem-code-input:focus {
-            border-color: var(--primary-500, #7C3AED);
-            box-shadow: 0 0 0 3px rgba(124, 58, 237,0.12);
+            border-color: var(--primary-500, #10B981);
+            box-shadow: 0 0 0 3px rgba(16, 185, 129,0.12);
         }
         .iq-prem-code-btn {
-            background: linear-gradient(135deg, var(--primary-500, #7C3AED), var(--primary-600, #6D28D9));
+            background: linear-gradient(135deg, var(--primary-500, #10B981), var(--primary-600, #059669));
             color: #fff;
             border: none;
             border-radius: 12px;
@@ -1408,9 +1482,9 @@
             white-space: nowrap;
         }
         .iq-prem-code-btn:hover {
-            background: #5B21B6;
+            background: #047857;
             transform: translateY(-2px);
-            box-shadow: 0 6px 18px rgba(124, 58, 237,0.35);
+            box-shadow: 0 6px 18px rgba(16, 185, 129,0.35);
         }
         .iq-prem-code-btn:disabled {
             opacity: 0.6;
@@ -1437,7 +1511,7 @@
             width: 26px;
             height: 26px;
             border-radius: 50%;
-            background: linear-gradient(135deg, #059669, #10b981);
+            background: linear-gradient(135deg, #0D9488, #14B8A6);
             color: #fff;
             display: flex;
             align-items: center;
@@ -1495,22 +1569,22 @@
 
         /* ── Keep old CSS classes for backward compat ────────────────── */
         .iq-paywall-card {
-            background: linear-gradient(145deg, #150e29 0%, #241a3d 50%, #0b1329 100%);
-            border: 2px solid rgba(139, 92, 246, 0.4);
+            background: linear-gradient(145deg, #0B2A1D 0%, #143D2B 50%, #0b1329 100%);
+            border: 2px solid rgba(44, 74, 124, 0.4);
             border-radius: 24px;
             overflow: hidden;
-            box-shadow: 0 16px 48px rgba(21, 14, 41, 0.35), 0 0 24px rgba(124, 58, 237, 0.15);
-            color: #faf8fc;
+            box-shadow: 0 16px 48px rgba(11, 42, 29, 0.35), 0 0 24px rgba(34, 67, 122, 0.15);
+            color: #FAF7EE;
             position: relative;
         }
         [data-theme="light"] .iq-paywall-card {
-            background: linear-gradient(145deg, #150e29 0%, #1e3a8a 60%, #172554 100%);
+            background: linear-gradient(145deg, #0B2A1D 0%, #1e3a8a 60%, #172554 100%);
             border-color: rgba(96, 165, 250, 0.5);
             color: #ffffff;
         }
 
         .iq-shimmer-ribbon {
-            background: linear-gradient(90deg, #1e40af 0%, #8b5cf6 25%, #60a5fa 50%, #8b5cf6 75%, #1e40af 100%);
+            background: linear-gradient(90deg, #1e40af 0%, #2C4A7C 25%, #60a5fa 50%, #2C4A7C 75%, #1e40af 100%);
             background-size: 300% 100%;
             animation: iqRibbonShimmer 3.5s ease infinite;
             padding: 10px 20px;
@@ -1542,13 +1616,13 @@
             margin-bottom: 16px;
         }
         .iq-premium-badge {
-            background: linear-gradient(135deg, #eab308, #f59e0b, #d97706);
-            color: #150e29;
+            background: linear-gradient(135deg, #10B981, #14B8A6, #0D9488);
+            color: #ffffff;
             font-size: 1.15rem;
             font-weight: 900;
             padding: 7px 24px;
             border-radius: 50px;
-            box-shadow: 0 4px 20px rgba(245, 158, 11, 0.45);
+            box-shadow: 0 4px 20px rgba(20, 184, 166, 0.45);
             animation: iqBadgePop 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) both;
             display: inline-flex;
             align-items: center;
@@ -1568,7 +1642,7 @@
         }
         .iq-paywall-subtitle {
             font-size: 0.95rem;
-            color: rgba(231, 225, 240, 0.85);
+            color: rgba(220, 235, 217, 0.85);
             max-width: 680px;
             margin: 0 auto 24px;
             line-height: 1.7;
@@ -1578,7 +1652,7 @@
             display: inline-flex;
             align-items: baseline;
             gap: 8px;
-            background: rgba(91, 33, 182, 0.3);
+            background: rgba(30, 64, 175, 0.3);
             border: 1.5px solid rgba(96, 165, 250, 0.4);
             border-radius: 16px;
             padding: 12px 28px;
@@ -1587,7 +1661,7 @@
         }
         .iq-price-label {
             font-size: 0.9rem;
-            color: rgba(231, 225, 240, 0.8);
+            color: rgba(220, 235, 217, 0.8);
             font-weight: 600;
         }
         .iq-price-val {
@@ -1632,7 +1706,7 @@
             width: 38px;
             height: 38px;
             border-radius: 12px;
-            background: linear-gradient(135deg, #7C3AED, #5B21B6);
+            background: linear-gradient(135deg, #10B981, #047857);
             color: #ffffff;
             display: flex;
             align-items: center;
@@ -1640,7 +1714,7 @@
             font-weight: 900;
             font-size: 1.1rem;
             flex-shrink: 0;
-            box-shadow: 0 4px 12px rgba(124, 58, 237, 0.4);
+            box-shadow: 0 4px 12px rgba(34, 67, 122, 0.4);
         }
         .iq-step-info { flex: 1; min-width: 0; }
         .iq-step-title {
@@ -1651,7 +1725,7 @@
         }
         .iq-step-desc {
             font-size: 0.85rem;
-            color: rgba(231, 225, 240, 0.8);
+            color: rgba(220, 235, 217, 0.8);
             margin-bottom: 12px;
             line-height: 1.5;
         }
@@ -1691,18 +1765,18 @@
             display: flex;
             align-items: center;
             gap: 12px;
-            background: linear-gradient(135deg, #0284c7, #0369a1);
+            background: linear-gradient(135deg, #22437A, #0369a1);
             color: #ffffff;
             text-decoration: none;
             border-radius: 14px;
             padding: 12px 18px;
             transition: all 0.25s;
-            box-shadow: 0 4px 16px rgba(2, 132, 199, 0.35);
+            box-shadow: 0 4px 16px rgba(34, 67, 122, 0.35);
         }
         .iq-tg-btn:hover {
             transform: translateY(-2px);
-            background: linear-gradient(135deg, #0ea5e9, #0284c7);
-            box-shadow: 0 8px 24px rgba(2, 132, 199, 0.5);
+            background: linear-gradient(135deg, #22437A, #22437A);
+            box-shadow: 0 8px 24px rgba(34, 67, 122, 0.5);
         }
         .iq-tg-icon { font-size: 1.5rem; flex-shrink: 0; }
         .iq-tg-text { flex: 1; text-align: right; }
@@ -1711,18 +1785,18 @@
         .iq-tg-arrow { font-size: 1.2rem; flex-shrink: 0; }
 
         .iq-notice-box {
-            background: rgba(124, 58, 237, 0.1);
-            border: 1px solid rgba(124, 58, 237, 0.3);
+            background: rgba(20, 184, 166, 0.1);
+            border: 1px solid rgba(20, 184, 166, 0.3);
             border-radius: 14px;
             padding: 16px 20px;
             margin-bottom: 24px;
             text-align: right;
             font-size: 0.88rem;
-            color: rgba(231, 225, 240, 0.9);
+            color: rgba(220, 235, 217, 0.9);
         }
         .iq-notice-title {
             font-weight: 800;
-            color: #6ee7b7;
+            color: #5EEAD4;
             margin-bottom: 8px;
         }
         .iq-notice-box ul { list-style: none; padding: 0; margin: 0; }
@@ -1737,7 +1811,7 @@
         .iq-code-divider {
             text-align: center;
             font-size: 0.9rem;
-            color: rgba(231, 225, 240, 0.7);
+            color: rgba(220, 235, 217, 0.7);
             margin-bottom: 14px;
             font-weight: 700;
         }
@@ -1760,8 +1834,8 @@
         }
 
         .iq-enrolled-banner {
-            background: linear-gradient(135deg, rgba(124, 58, 237, 0.15), rgba(5, 150, 105, 0.05));
-            border: 2px solid rgba(124, 58, 237, 0.4);
+            background: linear-gradient(135deg, rgba(20, 184, 166, 0.15), rgba(13, 148, 136, 0.05));
+            border: 2px solid rgba(20, 184, 166, 0.4);
             border-radius: 20px;
             padding: 32px;
             text-align: center;
@@ -1795,7 +1869,14 @@
         }
 
         const effectivePackages = sanitizeEffectivePackages(getEffectiveCoursePackages(course, isEnrolled));
-        const allLessons = effectivePackages.flatMap(p => p.lessons);
+        // Enrich lessons with real progress data (isCompleted / isLocked)
+        const _rawLessons = effectivePackages.flatMap(p => p.lessons);
+        const allLessons = (typeof window.enrichLessonsWithProgress === 'function')
+            ? window.enrichLessonsWithProgress(currentUser ? currentUser.id : null, courseId, _rawLessons)
+            : _rawLessons;
+        // Write enriched lessons back into packages so sidebar + curriculum reflect reality
+        let _lIdx = 0;
+        effectivePackages.forEach(pkg => { pkg.lessons = pkg.lessons.map(() => allLessons[_lIdx++] || {}); });
 
         // بحث مرن عن الدرس لتفادي أي عدم تطابق في المعرفات
         const targetLId = String(lessonId || '');
@@ -1813,9 +1894,9 @@
                 <div class="container">
                     <div class="card" style="max-width:500px;margin:0 auto;padding:40px 20px;">
                         <div style="font-size:3.5rem;margin-bottom:12px;">📂</div>
-                        <h3>لسه معملتش محاضرات في الكورس ده</h3>
-                        <p style="color:var(--text-secondary);margin-bottom:20px;">المدرّس لسه معملش دروس للكورس ده.</p>
-                        <a href="#license/${courseId}" class="btn btn-primary">&larr; الرجوع للكورس</a>
+                        <h3>No lectures in this course yet</h3>
+                        <p style="color:var(--text-secondary);margin-bottom:20px;">The instructor hasn't added lessons to this course yet.</p>
+                        <a href="#license/${courseId}" class="btn btn-primary">&larr; Back to Course</a>
                     </div>
                 </div>
             </div>`;
@@ -1842,9 +1923,9 @@
             <div class="lesson-sidebar" id="lessonSidebar">
                 <div class="lesson-sidebar-header">
                     <div class="lsh-top">
-                        <button class="lsh-back-btn" onclick="navigate('courses')" title="الرجوع للكورسات">&larr;</button>
+                        <button class="lsh-back-btn" onclick="navigate('courses')" title="Back to Courses">&larr;</button>
                         <div class="lsh-title">${course.title}</div>
-                        <button class="lsh-close-btn" onclick="toggleLessonSidebar(false)" title="إغلاق القائمة">✕</button>
+                        <button class="lsh-close-btn" onclick="toggleLessonSidebar(false)" title="Close menu">✕</button>
                     </div>
                     <div class="lesson-sidebar-progress">
                         <div class="lsp-bar">
@@ -1853,9 +1934,9 @@
                         <span class="lsp-pct">${progressPct}%</span>
                     </div>
                     <div class="lsh-stats">
-                        <span>📚 ${allLessons.length} موضوع</span>
+                        <span>📚 ${allLessons.length} Topics</span>
                         <span>•</span>
-                        <span>✅ ${completedCount} مكتمل</span>
+                        <span>✅ ${completedCount} Completed</span>
                     </div>
                 </div>
 
@@ -1871,14 +1952,15 @@
                             <div class="acc-pkg-body" style="display:block;">
                                 ${pkg.lessons.map((l, li) => {
             const isActive = l.id === lesson.id || l.lessonId === lesson.lessonId;
-            return `
+            const lessonRow = `
                                     <div class="sidebar-lesson-item ${isActive ? 'active' : ''} ${l.isCompleted ? 'completed' : ''} ${l.isLocked ? 'locked' : ''}"
-                                         onclick="${l.isLocked ? "showToast('هذا المحتوى مقفول', 'error')" : "navigate('lesson/" + courseId + "/" + l.id + "'); if(window.innerWidth<=768) toggleLessonSidebar(false);"}">
+                                         onclick="${l.isLocked ? "showToast('This content is locked', 'error')" : "navigate('lesson/" + courseId + "/" + l.id + "'); if(window.innerWidth<=768) toggleLessonSidebar(false);"}">
                                         <span class="sl-num">${li + 1}</span>
                                         <span class="sl-icon">${l.isCompleted ? '✅' : l.isLocked ? '🔒' : l.type === 'video' ? '▶️' : l.type === 'quiz' ? '📝' : '📄'}</span>
                                         <span class="sl-title">${l.title}</span>
                                         <span class="sl-duration">${l.duration || ''}</span>
                                     </div>`;
+            return lessonRow + renderSidebarQuizRow(l, courseId);
         }).join('')}
                             </div>
                         </div>
@@ -1890,7 +1972,7 @@
             <div class="lesson-content">
                 <div class="lesson-content-header">
                     <div class="breadcrumb">
-                        <a href="#courses">الكورسات</a>
+                        <a href="#courses">Courses</a>
                         <span class="bc-sep">/</span>
                         <a href="#license/${courseId}">${course.title}</a>
                         <span class="bc-sep">/</span>
@@ -1901,10 +1983,10 @@
                         <div>
                             <h1 class="lesson-title" style="margin:0 0 8px;">${lesson.title}</h1>
                             <div class="lesson-meta-row">
-                                <span class="badge badge-primary">🎥 محاضرة فيديو</span>
+                                <span class="badge badge-primary">🎥 Video Lecture</span>
                                 ${lesson.duration ? `<span class="lesson-duration">⏱️ ${lesson.duration}</span>` : ''}
-                                ${hasPdf ? `<span class="badge badge-danger" style="cursor:pointer;" onclick="switchLessonTab('pdf')">📄 ملزمة PDF</span>` : ''}
-                                ${hasQuiz ? `<span class="badge badge-accent" style="cursor:pointer;" onclick="switchLessonTab('quiz')">📝 يوجد اختبار</span>` : ''}
+                                ${hasPdf ? `<span class="badge badge-danger" style="cursor:pointer;" onclick="switchLessonTab('pdf')">📄 PDF Notes</span>` : ''}
+                                ${hasQuiz ? `<span class="badge badge-accent" style="cursor:pointer;" onclick="switchLessonTab('quiz')">📝 Quiz Available</span>` : ''}
                             </div>
                         </div>
                     </div>
@@ -1913,18 +1995,18 @@
                 <!-- ═══════════ LESSON TABS BAR ═══════════ -->
                 <div class="lesson-tabs-nav" id="lessonTabsNav">
                     <button class="lesson-tab-btn active" id="ltab-btn-video" onclick="switchLessonTab('video')">
-                        <span class="lt-icon">🎥</span> محاضرة الفيديو
+                        <span class="lt-icon">🎥</span> Video Lecture
                     </button>
                     ${hasPdf ? `
                     <button class="lesson-tab-btn" id="ltab-btn-pdf" onclick="switchLessonTab('pdf')">
-                        <span class="lt-icon">📄</span> الملازم والـ PDF
+                        <span class="lt-icon">📄</span> Notes &amp; PDF
                     </button>` : ''}
                     ${hasQuiz ? `
                     <button class="lesson-tab-btn" id="ltab-btn-quiz" onclick="switchLessonTab('quiz')">
-                        <span class="lt-icon">📝</span> اختبار وتدريب
+                        <span class="lt-icon">📝</span> Quiz &amp; Practice
                     </button>` : ''}
                     <button class="lesson-tab-btn" id="ltab-btn-overview" onclick="switchLessonTab('overview')">
-                        <span class="lt-icon">ℹ️</span> نظرة عامة وملاحظات
+                        <span class="lt-icon">ℹ️</span> Overview &amp; Notes
                     </button>
                 </div>
 
@@ -1948,23 +2030,23 @@
                 <div class="lesson-tab-pane" id="ltab-pane-overview" style="display:none;">
                     <div class="card card-flat" style="padding:24px;border-radius:18px;border:1px solid var(--border);background:var(--bg-surface);margin-bottom:20px;">
                         <h3 style="font-size:1.1rem;font-weight:800;margin-bottom:12px;display:flex;align-items:center;gap:8px;">
-                            <span>📖</span> تفاصيل وملخص الدرس
+                            <span>📖</span> Lesson Details &amp; Summary
                         </h3>
                         <p style="color:var(--text-secondary);line-height:1.85;margin-bottom:20px;">
-                            ${lesson.description || course.description || 'شرح شامل وتمارين عملية مع فريق أفكار وأسرار.'}
+                            ${lesson.description || course.description || 'Comprehensive explanation and practical exercises with Mr. Islam Abdelwahed.'}
                         </p>
 
                         <div style="border-top:1px dashed var(--border);padding-top:18px;">
                             <h4 style="font-size:0.95rem;font-weight:800;margin-bottom:8px;display:flex;align-items:center;gap:6px;">
-                                <span>✏️</span> ملاحظاتك على الدرس ده (بتتحفظ تلقائيًا):
+                                <span>✏️</span> Your Notes for this lesson (Auto-saved):
                             </h4>
                             <textarea id="lessonStudentNote"
-                                      placeholder="اكتب ملاحظاتك والقواعد والنقاط المهمة هنا وانت بتشاهد..."
+                                      placeholder="Write your notes, formulas, and key points here while watching..."
                                       style="width:100%;min-height:110px;padding:12px 14px;border-radius:12px;border:1.5px solid var(--border);background:var(--bg-alt);font-family:inherit;font-size:0.9rem;line-height:1.7;resize:vertical;"
                                       oninput="saveLessonNote('${courseId}', '${lesson.id || lesson.lessonId}')">${savedNote}</textarea>
                             <div style="font-size:0.75rem;color:var(--text-muted);margin-top:6px;display:flex;justify-content:space-between;">
-                                <span>🔒 ملاحظاتك خاصة ومحفوظة على جهازك بس</span>
-                                <span id="noteSavedStatus" style="color:var(--success);display:none;">اتحفظت ✓</span>
+                                <span>🔒 Your notes are private and saved on your device</span>
+                                <span id="noteSavedStatus" style="color:var(--success);display:none;">Saved ✓</span>
                             </div>
                         </div>
                     </div>
@@ -1974,18 +2056,25 @@
                 <div class="lesson-nav" style="margin-top:var(--space-xl);margin-bottom:var(--space-xl);display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
                     ${prevLesson ? `
                         <button class="btn btn-outline btn-lg" onclick="navigate('lesson/${courseId}/${prevLesson.id}')">
-                            &larr; الدرس السابق
+                            &larr; Previous Lesson
                         </button>
                     ` : '<div></div>'}
-                    ${nextLesson ? `
-                        <button class="btn btn-primary btn-lg" onclick="navigate('lesson/${courseId}/${nextLesson.id}')">
-                            الدرس التالي &rarr;
-                        </button>
-                    ` : `
-                        <button class="btn btn-accent btn-lg" onclick="navigate('license/${courseId}')">
-                            🎉 مبروك! خلّصت الكورس
-                        </button>
-                    `}
+                    ${nextLesson ? (() => {
+                        const gate = getLessonQuizGateInfo(lesson, courseId);
+                        if (gate && gate.locked) {
+                            return renderLockedNavButton('&#128274; Next Lesson', gate);
+                        }
+                        var _navNext = "navigate('lesson/" + courseId + "/" + nextLesson.id + "')";
+                        return '<button class="btn btn-primary btn-lg" onclick="' + _navNext + '">Next Lesson &rarr;</button>';
+                    })() : (() => {
+                        // نفس بوابة الاختبار تتطبق على آخر درس قبل اعتبار الكورس مكتمل
+                        const gate = getLessonQuizGateInfo(lesson, courseId);
+                        if (gate && gate.locked) {
+                            return renderLockedNavButton('&#128274; Course Completed', gate);
+                        }
+                        return '<button class="btn btn-accent btn-lg" onclick="navigate(\'license/' + courseId + '\')">' +
+                               '&#127881; Congratulations! Course Completed</button>';
+                    })()}
                 </div>
 
                 <!-- ═══════════ IN-PAGE PACKAGES & LESSONS LIST ═══════════ -->
@@ -1993,12 +2082,12 @@
                     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:12px;flex-wrap:wrap;">
                         <div>
                             <h2 style="margin:0 0 4px;font-size:1.2rem;font-weight:900;color:var(--text-primary);display:flex;align-items:center;gap:8px;">
-                                <span>📋</span> كل محاضرات وموضوعات الكورس (${effectivePackages.length} وحدة · ${allLessons.length} موضوع)
+                                <span>📋</span> All Course Lectures &amp; Topics (${effectivePackages.length} Units · ${allLessons.length} Topics)
                             </h2>
-                            <p style="margin:0;font-size:0.85rem;color:var(--text-muted);">اضغط على أي درس عشان تروح له مباشرة:</p>
+                            <p style="margin:0;font-size:0.85rem;color:var(--text-muted);">Click on any lesson to navigate directly:</p>
                         </div>
                         <span class="badge badge-primary" style="font-size:0.8rem;padding:6px 14px;font-weight:800;border-radius:10px;">
-                            ${completedCount} / ${allLessons.length} مكتمل
+                            ${completedCount} / ${allLessons.length} Completed
                         </span>
                     </div>
 
@@ -2015,8 +2104,8 @@
                                         <span>📦 ${pkg.title}</span>
                                     </div>
                                     <div class="accordion-pkg-meta">
-                                        <span>${completedInPkg}/${pkgLessons.length} مكتمل</span>
-                                        <span class="lesson-count">${pkgLessons.length} موضوع</span>
+                                        <span>${completedInPkg}/${pkgLessons.length} Completed</span>
+                                        <span class="lesson-count">${pkgLessons.length} Topics</span>
                                         <span class="accordion-pkg-arrow" id="inpage-arrow-${pi}">▼</span>
                                     </div>
                                 </div>
@@ -2024,17 +2113,17 @@
                                     ${pkgLessons.map((l, li) => {
                 const isActive = l.id === lesson.id || l.lessonId === lesson.lessonId;
                 const icon = l.isCompleted ? '✅' : l.isLocked ? '🔒' : l.type === 'video' ? '▶️' : l.type === 'quiz' ? '📝' : '📄';
-                const typeLabel = l.type === 'video' ? '🎥 فيديو' : l.type === 'quiz' ? '📝 اختبار' : '📄 ملزمة PDF';
-                return `
+                const typeLabel = l.type === 'video' ? '🎥 Video' : l.type === 'quiz' ? '📝 Quiz' : '📄 PDF Note';
+                const lessonRow = `
                                         <div class="accordion-lesson-item ${isActive ? 'active-lesson-item' : ''} ${l.isCompleted ? 'completed' : ''} ${l.isLocked ? 'locked' : ''}"
-                                             style="${isActive ? 'background:rgba(124, 58, 237,0.08);border-left:3px solid var(--primary,#7c3aed);' : ''}"
-                                             onclick="${l.isLocked ? "showToast('هذا المحتوى مقفول', 'error')" : "navigate('lesson/" + courseId + "/" + l.id + "')"}">
+                                             style="${isActive ? 'background:rgba(34, 67, 122,0.08);border-left:3px solid var(--primary,#22437A);' : ''}"
+                                             onclick="${l.isLocked ? "showToast('This content is locked', 'error')" : "navigate('lesson/" + courseId + "/" + l.id + "')"}">
                                             <div class="accordion-lesson-left" style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;">
                                                 <span class="accordion-lesson-num" style="font-weight:800;font-size:0.8rem;color:var(--text-muted);min-width:24px;">${pi + 1}.${li + 1}</span>
                                                 <div class="accordion-lesson-icon" style="font-size:1.1rem;flex-shrink:0;">${icon}</div>
                                                 <div style="min-width:0;flex:1;">
-                                                    <div class="accordion-lesson-title" style="font-weight:700;font-size:0.95rem;color:${isActive ? 'var(--primary,#7c3aed)' : 'var(--text-primary)'};">
-                                                        ${l.title} ${isActive ? '<span class="badge badge-primary" style="font-size:0.7rem;margin-left:6px;padding:2px 8px;">بيتشغّل دلوقتي ◀</span>' : ''}
+                                                    <div class="accordion-lesson-title" style="font-weight:700;font-size:0.95rem;color:${isActive ? 'var(--primary,#22437A)' : 'var(--text-primary)'};">
+                                                        ${l.title} ${isActive ? '<span class="badge badge-primary" style="font-size:0.7rem;margin-left:6px;padding:2px 8px;">Playing Now ◀</span>' : ''}
                                                     </div>
                                                     <div class="accordion-lesson-meta" style="font-size:0.78rem;color:var(--text-muted);display:flex;gap:6px;align-items:center;margin-top:2px;">
                                                         <span>${typeLabel}</span>
@@ -2044,14 +2133,16 @@
                                             </div>
                                             <div class="accordion-lesson-right" style="flex-shrink:0;margin-left:8px;">
                                                 ${isActive
-                        ? '<span class="badge badge-primary" style="font-size:0.75rem;">بيتشغّل</span>'
+                        ? '<span class="badge badge-primary" style="font-size:0.75rem;">Playing</span>'
                         : l.isCompleted
-                            ? '<span class="badge badge-success" style="font-size:0.75rem;">✓ مكتمل</span>'
+                            ? '<span class="badge badge-success" style="font-size:0.75rem;">✓ Completed</span>'
                             : !l.isLocked
-                                ? '<span class="badge" style="font-size:0.75rem;background:rgba(124, 58, 237,0.1);color:#7c3aed;border:1px solid rgba(124, 58, 237,0.2);">متاح</span>'
-                                : '<span class="badge" style="font-size:0.75rem;background:rgba(107, 98, 128,0.1);color:#6b6280;border:1px solid rgba(107, 98, 128,0.2);">🔒 مقفول</span>'}
+                                ? '<span class="badge" style="font-size:0.75rem;background:rgba(34, 67, 122,0.1);color:#22437A;border:1px solid rgba(34, 67, 122,0.2);">Available</span>'
+                                : '<span class="badge" style="font-size:0.75rem;background:rgba(95, 125, 106,0.1);color:#5F7D6A;border:1px solid rgba(95, 125, 106,0.2);">🔒 Locked</span>'}
                                             </div>
                                         </div>`;
+                const quizRow = renderCurriculumQuizRow(l, courseId);
+                return lessonRow + quizRow;
             }).join('')}
                                 </div>
                             </div>`;
@@ -2061,9 +2152,9 @@
             </div>
         </div>
 
-        <button class="lesson-sidebar-toggle" onclick="toggleLessonSidebar()" aria-label="قائمة الدروس">
+        <button class="lesson-sidebar-toggle" onclick="toggleLessonSidebar()" aria-label="Lessons Menu">
             <span style="font-size:1.15rem;">📚</span>
-            <span>الدروس (${allLessons.length})</span>
+            <span>Lessons (${allLessons.length})</span>
         </button>`;
         // ── التبديل السلس بين تبويبات الدرس ─────────────────────────
         window.switchLessonTab = function (tabId) {
@@ -2099,33 +2190,34 @@
         // ── تشغيل مقطع فيديو محدد داخل الدرس (Multi-Segment Video) ───
         window.playLessonSegment = function (videoUrl, title, btnEl) {
             if (!videoUrl) return;
-            const iframeContainer = document.getElementById('lessonVideoEmbedContainer');
+            var iframeContainer = document.getElementById('lessonVideoEmbedContainer');
             if (iframeContainer) {
-                const isDirectVideo = /\.(mp4|webm|ogg)(\?.*)?$/i.test(videoUrl);
-                const embedSrc = toSafeEmbedUrl(videoUrl);
-                iframeContainer.innerHTML = isDirectVideo ? `
-                <video controls style="position:absolute;top:0;left:0;width:100%;height:100%;background:#000;" preload="metadata">
-                    <source src="${videoUrl}">
-                    Your browser does not support HTML video.
-                </video>
-            ` : `
-                <iframe src="${embedSrc}"
-                        frameborder="0"
-                        allowfullscreen
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                        sandbox="allow-scripts allow-same-origin allow-presentation allow-forms allow-popups allow-popups-to-escape-sandbox"
-                        referrerpolicy="strict-origin-when-cross-origin"
-                        style="position:absolute;top:0;left:0;width:100%;height:100%;border:none;border-radius:14px;z-index:1;"></iframe>
-                <!-- Protective shields -->
-                <div class="yt-shield yt-shield-top" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>
-                <div class="yt-shield yt-shield-tr" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>
-                <div class="yt-shield yt-shield-tl" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>
-                <div class="yt-shield yt-shield-br" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>
-                <div class="yt-shield yt-shield-bl" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>`;
+                var isDirectVideo = /\.(mp4|webm|ogg)(\?.*)?$/i.test(videoUrl);
+                var embedSrc = toSafeEmbedUrl(videoUrl);
+                if (isDirectVideo) {
+                    iframeContainer.innerHTML = [
+                        '<video controls style="position:absolute;top:0;left:0;width:100%;height:100%;background:#000;" preload="metadata">',
+                        '<source src="' + videoUrl + '">Your browser does not support HTML5 video.</video>'
+                    ].join('');
+                } else {
+                    // Load directly (segment switch = user intent to play)
+                    var playUrl = embedSrc + (embedSrc.indexOf('?') > -1 ? '&' : '?') + 'autoplay=1';
+                    iframeContainer.innerHTML = [
+                        '<iframe src="' + playUrl + '" frameborder="0" allowfullscreen',
+                        ' allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"',
+                        ' referrerpolicy="strict-origin-when-cross-origin"',
+                        ' style="position:absolute;top:0;left:0;width:100%;height:100%;border:none;border-radius:14px;z-index:1;"></iframe>',
+                        '<div class="yt-shield yt-shield-top" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>',
+                        '<div class="yt-shield yt-shield-tr" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>',
+                        '<div class="yt-shield yt-shield-tl" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>',
+                        '<div class="yt-shield yt-shield-br" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>',
+                        '<div class="yt-shield yt-shield-bl" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>'
+                    ].join('');
+                }
             }
             document.querySelectorAll('.segment-btn').forEach(b => b.classList.remove('active'));
             if (btnEl) btnEl.classList.add('active');
-            showToast('بيتشغّل دلوقتي: ' + (title || 'جزء الدرس'), 'info');
+            showToast('Now Playing: ' + (title || 'Segment'), 'info');
         };
 
         // ── تحويل الرابط إلى Embed آمن يدعم كل صيغ الفيديو ─────────
@@ -2150,7 +2242,7 @@
                 if (m) ytId = m[1];
             }
             if (ytId && /^[A-Za-z0-9_-]{11}$/.test(ytId)) {
-                return `https://www.youtube-nocookie.com/embed/${ytId}?rel=0&modestbranding=1&playsinline=1&enablejsapi=1&iv_load_policy=3&fs=1&disablekb=0`;
+                return 'https://www.youtube.com/embed/' + ytId + '?rel=0&modestbranding=1&playsinline=1&iv_load_policy=3&fs=1&enablejsapi=1';
             }
             if (u.includes('youtube.com/embed/')) return u;
             // Vimeo
@@ -2189,8 +2281,8 @@
             <div class="video-player-wrap">
                 <div class="video-placeholder">
                     <div class="play-btn-big">▶</div>
-                    <span style="font-weight:700;font-size:1rem;color:rgba(255,255,255,0.85);">لسه معملش فيديو مسجّل للدرس ده</span>
-                    <span style="font-size:0.85rem;color:rgba(255,255,255,0.5);">تقدر تشوف ملزمة الـ PDF أو الاختبار الإلكتروني فوق</span>
+                    <span style="font-weight:700;font-size:1rem;color:rgba(255,255,255,0.85);">No recorded video available for this lesson yet</span>
+                    <span style="font-size:0.85rem;color:rgba(255,255,255,0.5);">You can check the attached PDF notes or online quiz above</span>
                 </div>
             </div>`;
             }
@@ -2200,7 +2292,7 @@
                 segmentsHTML = `
             <div class="segments-playlist" style="margin-bottom:16px;background:var(--bg-surface);padding:14px 18px;border-radius:16px;border:1px solid var(--border);">
                 <div style="font-weight:800;font-size:0.9rem;color:var(--text-primary);margin-bottom:10px;display:flex;align-items:center;gap:6px;">
-                    <span>🎬</span> أجزاء المحاضرة (${segments.length} جزء):
+                    <span>🎬</span> Lecture Segments (${segments.length} segments):
                 </div>
                 <div style="display:flex;gap:8px;flex-wrap:wrap;">
                     ${segments.map((seg, si) => {
@@ -2210,8 +2302,8 @@
                     const isActive = si === 0;
                     return `
                         <button class="segment-btn ${isActive ? 'active' : ''}"
-                                onclick="playLessonSegment('${sUrl}', '${seg.title || ('جزء ' + (si + 1))}', this)">
-                            <span>▶ ${seg.title || ('جزء ' + (si + 1))}</span>
+                                onclick="playLessonSegment('${sUrl}', '${seg.title || ('Segment ' + (si + 1))}', this)">
+                            <span>▶ ${seg.title || ('Segment ' + (si + 1))}</span>
                             ${seg.duration ? `<small style="opacity:0.7;">(${seg.duration})</small>` : ''}
                         </button>`;
                 }).join('')}
@@ -2222,35 +2314,63 @@
             var embedUrl = toSafeEmbedUrl(url);
             var isDirectVideo = /\.(mp4|webm|ogg)(\?.*)?$/i.test(url);
 
-            return `
-        <div>
-            ${segmentsHTML}
-            <div class="video-player-wrap">
-                <div class="video-responsive-wrap" id="lessonVideoEmbedContainer">
-                    ${isDirectVideo ? `
-                        <video controls style="position:absolute;top:0;left:0;width:100%;height:100%;background:#000;" preload="metadata">
-                            <source src="${url}">
-                            Your browser does not support HTML video.
-                        </video>
-                    ` : `
-                        <iframe src="${embedUrl}"
-                                frameborder="0"
-                                allowfullscreen
-                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                                sandbox="allow-scripts allow-same-origin allow-presentation allow-forms allow-popups allow-popups-to-escape-sandbox"
-                                referrerpolicy="strict-origin-when-cross-origin"
-                                style="position:absolute;top:0;left:0;width:100%;height:100%;border:none;border-radius:14px;z-index:1;"></iframe>
-                        <!-- Protective shields -->
-                        <div class="yt-shield yt-shield-top" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>
-                        <div class="yt-shield yt-shield-tr" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>
-                        <div class="yt-shield yt-shield-tl" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>
-                        <div class="yt-shield yt-shield-br" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>
-                        <div class="yt-shield yt-shield-bl" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>
-                    `}
-                </div>
-            </div>
-        </div>`;
+            // Extract YouTube Video ID for Thumbnail
+            var ytId = null;
+            if (!isDirectVideo) {
+                var _m = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/|live\/))([A-Za-z0-9_-]{11})/);
+                if (_m) ytId = _m[1];
+            }
+
+            var videoInnerHTML;
+            if (isDirectVideo) {
+                videoInnerHTML = [
+                    '<video controls style="position:absolute;top:0;left:0;width:100%;height:100%;background:#000;" preload="metadata">',
+                    '<source src="' + url + '">Your browser does not support HTML5 video.</video>'
+                ].join('');
+            } else if (ytId) {
+                // Thumbnail-first: student clicks to play inside the platform
+                var thumbUrl = 'https://img.youtube.com/vi/' + ytId + '/maxresdefault.jpg';
+                var hqUrl    = 'https://img.youtube.com/vi/' + ytId + '/hqdefault.jpg';
+                videoInnerHTML = [
+                    '<div id="yt-thumb-overlay" data-embed="' + encodeURIComponent(embedUrl) + '" style="position:absolute;top:0;left:0;width:100%;height:100%;',
+                    'cursor:pointer;z-index:5;background:#000;border-radius:14px;overflow:hidden;"',
+                    ' onclick="window.loadLessonIframe(decodeURIComponent(this.dataset.embed), this)">',
+                    '<img src="' + thumbUrl + '" onerror="this.src=\'' + hqUrl + '\'"',
+                    ' style="width:100%;height:100%;object-fit:cover;display:block;opacity:0.82;" loading="lazy" alt="">',
+                    '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;">',
+                    '<div style="width:76px;height:76px;border-radius:50%;',
+                    'background:linear-gradient(135deg,#0F766E,#0D9488,#10B981);',
+                    'box-shadow:0 0 36px rgba(13, 148, 136,0.7);display:flex;align-items:center;justify-content:center;',
+                    'font-size:2.2rem;color:#fff;">&#9654;</div>',
+                    '<span style="color:#fff;font-size:0.95rem;font-weight:800;text-shadow:0 2px 8px rgba(0,0,0,0.8);',
+                    'background:rgba(0,0,0,0.45);padding:4px 18px;border-radius:20px;">اضغط للتشغيل</span>',
+                    '</div></div>'
+                ].join('');
+            } else {
+                // Non-YouTube (Vimeo, Bunny, etc.) - load directly with shields
+                videoInnerHTML = [
+                    '<iframe src="' + embedUrl + '" frameborder="0" allowfullscreen',
+                    ' allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"',
+                    ' referrerpolicy="strict-origin-when-cross-origin"',
+                    ' style="position:absolute;top:0;left:0;width:100%;height:100%;border:none;border-radius:14px;z-index:1;"></iframe>',
+                    '<div class="yt-shield yt-shield-top" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>',
+                    '<div class="yt-shield yt-shield-tr" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>',
+                    '<div class="yt-shield yt-shield-tl" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>',
+                    '<div class="yt-shield yt-shield-br" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>',
+                    '<div class="yt-shield yt-shield-bl" onclick="event.stopPropagation();event.preventDefault();return false;" oncontextmenu="return false;"></div>'
+                ].join('');
+            }
+
+            return (
+                '<div>' + segmentsHTML +
+                '<div class="video-player-wrap">' +
+                '<div class="video-responsive-wrap" id="lessonVideoEmbedContainer">' +
+                videoInnerHTML +
+                '</div></div></div>'
+            );
         }
+
+        // loadLessonIframe defined at module level below
 
         // ── عرض ملف PDF ──────────────────────────────────────────────
         function renderLessonPdfBlock(lesson) {
@@ -2259,21 +2379,127 @@
                 return `
             <div class="card card-flat" style="padding:var(--space-2xl);text-align:center;border-radius:18px;border:1px solid var(--border);background:var(--bg-surface);">
                 <div style="font-size:3.5rem;margin-bottom:var(--space-sm);">📄</div>
-                <h3 style="margin-bottom:var(--space-xs);">${lesson.pdfName || lesson.title || 'ملف PDF'}</h3>
-                <p style="color:var(--text-secondary);">مفيش ملف PDF متاح للدرس ده دلوقتي.</p>
+                <h3 style="margin-bottom:var(--space-xs);">${lesson.pdfName || lesson.title || 'PDF File'}</h3>
+                <p style="color:var(--text-secondary);">No PDF file available for this lesson currently.</p>
             </div>`;
             }
             return `
         <div class="pdf-viewer-block">
             <div class="pdf-actions">
-                <div class="pdf-title">📄 ${lesson.pdfName || lesson.title || 'ملخص وملاحظات الدرس'}</div>
+                <div class="pdf-title">📄 ${lesson.pdfName || lesson.title || 'Lesson Notes &amp; Summary'}</div>
                 <div style="display:flex;gap:8px;">
-                    <a href="${url}" target="_blank" rel="noopener" class="btn btn-primary btn-sm">🔍 افتح في تاب جديد</a>
-                    <a href="${url}" download class="btn btn-outline btn-sm">⬇️ تحميل الـ PDF</a>
+                    <a href="${url}" target="_blank" rel="noopener" class="btn btn-primary btn-sm">🔍 Open in New Tab</a>
+                    <a href="${url}" download class="btn btn-outline btn-sm">⬇️ Download PDF</a>
                 </div>
             </div>
             <iframe src="${url}" title="${lesson.title || 'PDF'}"></iframe>
         </div>`;
+        }
+
+        // ── نفس صف الاختبار لكن بشكل مبسّط لقائمة الـ Sidebar الجانبية ──
+        function renderSidebarQuizRow(l, courseId) {
+            if (!l.quizId) return '';
+            var attempt = (typeof window.getQuizAttempt === 'function' && currentUser)
+                ? window.getQuizAttempt(currentUser.id, l.quizId) : null;
+            var done = !!(attempt && attempt.status === 'submitted');
+            var passed = !!(attempt && attempt.passed);
+            var locked = !!l.isLocked;
+            var icon = done ? (passed ? '✅' : '📊') : locked ? '🔒' : '📝';
+            var navAction = locked
+                ? "showToast('Complete the lesson first to unlock its quiz', 'error')"
+                : "navigate('test/" + l.quizId + "/" + courseId + "/" + (l.id || '') + "'); if(window.innerWidth<=768) toggleLessonSidebar(false);";
+            return `
+                                    <div class="sidebar-lesson-item ${passed ? 'completed' : ''} ${locked ? 'locked' : ''}"
+                                         style="background:rgba(16, 185, 129,0.05);"
+                                         onclick="${navAction}">
+                                        <span class="sl-num">↳</span>
+                                        <span class="sl-icon">${icon}</span>
+                                        <span class="sl-title">Quiz${done ? ' — ' + attempt.score + '/' + attempt.total : ''}</span>
+                                        <span class="sl-duration"></span>
+                                    </div>`;
+        }
+
+        // ── صف الاختبار في قائمة "كل دروس الكورس" — يظهر بعد الدرس المرتبط به مباشرة ──
+        function renderCurriculumQuizRow(l, courseId) {
+            if (!l.quizId) return '';
+            var quiz = (typeof window.getQuizById === 'function') ? window.getQuizById(l.quizId) : null;
+            var attempt = (typeof window.getQuizAttempt === 'function' && currentUser)
+                ? window.getQuizAttempt(currentUser.id, l.quizId) : null;
+            var done = !!(attempt && attempt.status === 'submitted');
+            var passed = !!(attempt && attempt.passed);
+            var locked = !!l.isLocked; // نفس حالة قفل الدرس المرتبط بيه
+            var icon = done ? (passed ? '✅' : '📊') : locked ? '🔒' : '📝';
+            var title = 'Quiz: ' + (quiz ? quiz.title : l.title);
+            var statusBadge = done
+                ? '<span class="badge ' + (passed ? 'badge-success' : '') + '" style="font-size:0.75rem;' + (passed ? '' : 'background:rgba(220,38,38,0.1);color:#dc2626;border:1px solid rgba(220,38,38,0.25);') + '">' +
+                    (passed ? '✓ Passed' : '✕ Not Passed') + ' — ' + attempt.score + '/' + attempt.total +
+                    (attempt.percentage != null ? ' (' + attempt.percentage + '%)' : '') + '</span>'
+                : locked
+                    ? '<span class="badge" style="font-size:0.75rem;background:rgba(95, 125, 106,0.1);color:#5F7D6A;border:1px solid rgba(95, 125, 106,0.2);">🔒 Locked</span>'
+                    : '<span class="badge" style="font-size:0.75rem;background:rgba(16, 185, 129,0.12);color:#047857;border:1px solid rgba(16, 185, 129,0.25);">📝 Available</span>';
+            var navAction = locked
+                ? "showToast('Complete the lesson first to unlock its quiz', 'error')"
+                : "navigate('test/" + l.quizId + "/" + courseId + "/" + (l.id || '') + "')";
+            return `
+                                        <div class="accordion-lesson-item ${passed ? 'completed' : ''} ${locked ? 'locked' : ''}"
+                                             style="background:rgba(16, 185, 129,0.05);"
+                                             onclick="${navAction}">
+                                            <div class="accordion-lesson-left" style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;">
+                                                <span class="accordion-lesson-num" style="font-weight:800;font-size:0.8rem;color:var(--text-muted);min-width:24px;">↳</span>
+                                                <div class="accordion-lesson-icon" style="font-size:1.1rem;flex-shrink:0;">${icon}</div>
+                                                <div style="min-width:0;flex:1;">
+                                                    <div class="accordion-lesson-title" style="font-weight:700;font-size:0.95rem;color:var(--text-primary);">${title}</div>
+                                                    <div class="accordion-lesson-meta" style="font-size:0.78rem;color:var(--text-muted);display:flex;gap:6px;align-items:center;margin-top:2px;">
+                                                        <span>📝 Quiz</span>
+                                                        ${done ? `<span>• ✔ ${attempt.correct != null ? attempt.correct : '—'} / ✘ ${attempt.wrong != null ? attempt.wrong : '—'}</span>` : ''}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="accordion-lesson-right" style="flex-shrink:0;margin-left:8px;display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+                                                ${statusBadge}
+                                                ${done ? '<span style="font-size:0.72rem;color:var(--primary-600,#059669);font-weight:700;">📋 View Result</span>' : ''}
+                                            </div>
+                                        </div>`;
+        }
+
+        // ── فحص بوابة الاختبار لدرس معيّن: هل الطالب اجتاز اختبار هذا الدرس؟ ──
+        // يُستخدم لقفل "الدرس التالي" و"إتمام الكورس" على حدٍ سواء
+        function getLessonQuizGateInfo(lesson, courseId) {
+            const _cQuizId = lesson.quizId;
+            if (!_cQuizId) return { locked: false };
+            const _cQuiz = (typeof window.getQuizById === 'function') ? window.getQuizById(_cQuizId) : null;
+            const _cPass = _cQuiz ? (_cQuiz.averageGrade || _cQuiz.passingGrade || 50) : 50;
+            const _cAttempt = (typeof window.getQuizAttempt === 'function' && currentUser)
+                ? window.getQuizAttempt(currentUser.id, _cQuizId) : null;
+            const _cPct = _cAttempt
+                ? (_cAttempt.percentage !== undefined ? _cAttempt.percentage
+                    : (_cAttempt.total > 0 ? Math.round(_cAttempt.score / _cAttempt.total * 100) : 0))
+                : -1;
+            if (!_cAttempt || _cPct < _cPass) {
+                return {
+                    locked: true,
+                    message: !_cAttempt
+                        ? 'You must complete this lesson\'s quiz first (pass rate: ' + _cPass + '%)'
+                        : 'Score ' + _cPct + '% &mdash; below the ' + _cPass + '% required. Each quiz can only be taken once, so the next step stays locked.',
+                    btnLabel: !_cAttempt ? 'Start Quiz' : 'View Result',
+                    navQuiz: "navigate('test/" + _cQuizId + "/" + courseId + "/" + (lesson.id || '') + "')"
+                };
+            }
+            return { locked: false };
+        }
+
+        function renderLockedNavButton(lockedLabel, gate) {
+            return [
+                '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:10px;">',
+                '<button class="btn btn-primary btn-lg" disabled style="opacity:0.45;cursor:not-allowed;">',
+                lockedLabel, '</button>',
+                '<div style="background:#CCFBF1;border:1px solid #14B8A6;border-radius:12px;padding:10px 16px;font-size:0.85rem;font-weight:700;color:#115E59;text-align:center;">',
+                gate.message,
+                '</div>',
+                '<button class="btn btn-accent" onclick="' + gate.navQuiz + '">',
+                '&#128221; ' + gate.btnLabel + '</button>',
+                '</div>'
+            ].join('');
         }
 
         // ── عرض الاختبار داخل الدرس — يقرأ من alsaqr_quizzes ──────────
@@ -2285,43 +2511,52 @@
                 return `
             <div class="quiz-section" style="text-align:center;padding:var(--space-2xl);background:var(--bg-surface);border-radius:18px;border:1px solid var(--border);">
                 <div style="font-size:3.5rem;margin-bottom:var(--space-sm);">📝</div>
-                <h3 style="margin-bottom:var(--space-xs);">${lesson.title || 'اختبار الدرس'}</h3>
+                <h3 style="margin-bottom:var(--space-xs);">${lesson.title || 'Lesson Quiz'}</h3>
                 <p style="color:var(--text-secondary);margin-bottom:var(--space-lg);">
-                    ${quizId ? 'الاختبار لسه بيتجهّز من المدرّس.' : 'مفيش اختبار مرفق بالدرس ده لسه.'}
+                    ${quizId ? 'The quiz is being prepared by the teacher.' : 'No quiz attached to this lesson yet.'}
                 </p>
             </div>`;
             }
 
             var qCount = (quiz.questionsList || quiz.questions || []).length;
-            var timeLabel = quiz.time ? quiz.time + ' دقيقة' : '—';
+            var timeLabel = quiz.time ? quiz.time + ' mins' : '—';
             var prevAttempt = (typeof window.getQuizAttempt === 'function' && currentUser)
                 ? window.getQuizAttempt(currentUser.id, quizId) : null;
 
             return `
         <div class="quiz-preview-card" style="background:var(--bg-surface);padding:32px;border-radius:20px;border:1.5px solid var(--border);box-shadow:0 8px 30px rgba(0,0,0,0.05);text-align:center;">
             <div style="font-size:3.5rem;margin-bottom:12px;">📝</div>
-            <h2 style="font-size:1.4rem;font-weight:900;margin-bottom:6px;color:var(--text-primary);">${quiz.title || 'اختبار الدرس'}</h2>
+            <h2 style="font-size:1.4rem;font-weight:900;margin-bottom:6px;color:var(--text-primary);">${quiz.title || 'Lesson Quiz'}</h2>
             ${quiz.subject ? `<p style="color:var(--text-secondary);margin-bottom:20px;font-weight:600;">${quiz.subject}</p>` : ''}
 
             <div style="display:flex;justify-content:center;gap:24px;margin:20px 0;flex-wrap:wrap;">
                 <div style="background:var(--bg-alt);padding:12px 20px;border-radius:12px;border:1px solid var(--border);">
-                    <div style="font-size:1.3rem;font-weight:900;color:var(--primary-500, #7C3AED);">${qCount}</div>
-                    <div style="font-size:0.8rem;color:var(--text-muted);font-weight:700;">سؤال</div>
+                    <div style="font-size:1.3rem;font-weight:900;color:var(--primary-500, #10B981);">${qCount}</div>
+                    <div style="font-size:0.8rem;color:var(--text-muted);font-weight:700;">Questions</div>
                 </div>
                 <div style="background:var(--bg-alt);padding:12px 20px;border-radius:12px;border:1px solid var(--border);">
                     <div style="font-size:1.3rem;font-weight:900;color:var(--accent);">${timeLabel}</div>
-                    <div style="font-size:0.8rem;color:var(--text-muted);font-weight:700;">المدة الزمنية</div>
+                    <div style="font-size:0.8rem;color:var(--text-muted);font-weight:700;">Time Limit</div>
                 </div>
                 ${prevAttempt ? `
                 <div style="background:var(--bg-alt);padding:12px 20px;border-radius:12px;border:1px solid var(--border);">
-                    <div style="font-size:1.3rem;font-weight:900;color:var(--success);">${prevAttempt.score} / ${prevAttempt.total}</div>
-                    <div style="font-size:0.8rem;color:var(--text-muted);font-weight:700;">درجتك السابقة</div>
+                    <div style="font-size:1.3rem;font-weight:900;color:${prevAttempt.passed ? 'var(--success)' : '#DC2626'};">${prevAttempt.score} / ${prevAttempt.total}</div>
+                    <div style="font-size:0.8rem;color:var(--text-muted);font-weight:700;">${prevAttempt.percentage != null ? prevAttempt.percentage + '%' : ''} ${prevAttempt.passed ? '· ✅ Passed' : '· Not Passed'}</div>
                 </div>` : ''}
             </div>
 
+            ${prevAttempt ? `
+            <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:16px;font-size:0.82rem;font-weight:700;">
+                <span style="background:#DCFCE7;color:#15803D;border:1px solid #86EFAC;border-radius:20px;padding:5px 12px;">✔ Correct: ${prevAttempt.correct != null ? prevAttempt.correct : '—'}</span>
+                <span style="background:#FEF2F2;color:#DC2626;border:1px solid #FCA5A5;border-radius:20px;padding:5px 12px;">✘ Wrong: ${prevAttempt.wrong != null ? prevAttempt.wrong : '—'}</span>
+            </div>
+            <div style="background:${prevAttempt.passed ? '#DCFCE7' : '#FEF2F2'};color:${prevAttempt.passed ? '#15803D' : '#DC2626'};border:1px solid ${prevAttempt.passed ? '#86EFAC' : '#FCA5A5'};border-radius:12px;padding:10px 16px;font-size:0.85rem;font-weight:700;margin:4px 0 16px;">
+                🔒 This quiz has already been submitted — each quiz can only be taken once. You can review your answers only.
+            </div>` : ''}
+
             <div style="margin-top:24px;">
                 <button class="btn btn-primary btn-lg" onclick="navigate('test/${quizId}/${courseId}/${lesson.id || ''}')" style="padding:14px 36px;font-size:1.05rem;font-weight:900;">
-                    ⚡ ${prevAttempt ? 'أعد الاختبار' : 'ابدأ الاختبار الآن'}
+                    ${prevAttempt ? '📋 View Result' : '⚡ Start Quiz Now'}
                 </button>
             </div>
         </div>`;
@@ -2333,21 +2568,65 @@
             var s = document.createElement('style');
             s.id = 'quiz-preview-styles';
             s.textContent = [
-                '.quiz-preview-card{background:var(--bg-surface,#fff);border:2px solid var(--primary-200,#bfdbfe);border-radius:24px;padding:40px 32px;text-align:center;max-width:540px;margin:0 auto;box-shadow:0 8px 32px rgba(91, 33, 182,.08);}',
+                '.quiz-preview-card{background:var(--bg-surface,#fff);border:2px solid var(--primary-200,#bfdbfe);border-radius:24px;padding:40px 32px;text-align:center;max-width:540px;margin:0 auto;box-shadow:0 8px 32px rgba(30,64,175,.08);}',
                 '.qp-icon{font-size:3.5rem;margin-bottom:12px;}',
-                '.qp-title{font-size:1.4rem;font-weight:900;margin-bottom:6px;color:var(--text-primary,#150e29);}',
-                '.qp-subject{color:var(--text-secondary,#6b6280);font-size:.9rem;margin-bottom:20px;}',
-                '.qp-stats{display:flex;gap:20px;justify-content:center;background:var(--bg-alt,#faf8fc);border-radius:14px;padding:16px 20px;margin-bottom:24px;}',
+                '.qp-title{font-size:1.4rem;font-weight:900;margin-bottom:6px;color:var(--text-primary,#0B2A1D);}',
+                '.qp-subject{color:var(--text-secondary,#5F7D6A);font-size:.9rem;margin-bottom:20px;}',
+                '.qp-stats{display:flex;gap:20px;justify-content:center;background:var(--bg-alt,#FAF7EE);border-radius:14px;padding:16px 20px;margin-bottom:24px;}',
                 '.qp-stat{display:flex;flex-direction:column;align-items:center;gap:3px;}',
-                '.qp-stat-num{font-size:1.3rem;font-weight:900;color:var(--primary-600,#7c3aed);}',
-                '.qp-stat-lbl{font-size:.78rem;color:var(--text-secondary,#6b6280);font-weight:600;}',
+                '.qp-stat-num{font-size:1.3rem;font-weight:900;color:var(--primary-600,#22437A);}',
+                '.qp-stat-lbl{font-size:.78rem;color:var(--text-secondary,#5F7D6A);font-weight:600;}',
                 '.qp-prev-result{background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:10px 16px;margin-bottom:20px;display:flex;align-items:center;gap:8px;justify-content:center;flex-wrap:wrap;font-size:.9rem;}',
                 '.qp-actions{margin-bottom:16px;}',
-                '.qp-hint{font-size:.82rem;color:var(--text-muted,#9c93ad);}'
+                '.qp-hint{font-size:.82rem;color:var(--text-muted,#8FAB97);}'
             ].join('');
             document.head.appendChild(s);
         })();
     } // end renderQuizContent (was closed by orphaned block in original)
+
+    // ── صفحة "تم اجتياز الاختبار مسبقاً" — عرض النتيجة فقط بدون إعادة حل ──
+    function renderAlreadyPassedQuizPage(quiz, attempt, courseId, lessonId, backUrl) {
+        var letters = ['A', 'B', 'C', 'D', 'E', 'F'];
+        var questions = quiz.questionsList || [];
+        var answers = attempt.answers || {};
+        var reviewRows = questions.map(function (q, qi) {
+            var chosen = answers[qi];
+            var isCorrect = (chosen !== undefined && chosen === q.correctOpt);
+            var chosenLabel = (chosen !== undefined && q.opts && q.opts[chosen]) ? letters[chosen] + '. ' + q.opts[chosen] : '—';
+            var correctLabel = (q.opts && q.opts[q.correctOpt]) ? letters[q.correctOpt] + '. ' + q.opts[q.correctOpt] : '—';
+            return '<div style="display:flex;gap:12px;align-items:flex-start;padding:14px 20px;border-bottom:1px solid var(--border);text-align:left;direction:ltr;">' +
+                '<div style="font-size:1.15rem;flex-shrink:0;">' + (isCorrect ? '✅' : '❌') + '</div>' +
+                '<div style="flex:1;">' +
+                    '<div style="font-weight:700;margin-bottom:4px;color:var(--text-primary);">' + (qi + 1) + '. ' + (q.q || '') + '</div>' +
+                    '<div style="font-size:0.85rem;color:' + (isCorrect ? '#16a34a' : '#dc2626') + ';">Your answer: ' + chosenLabel + '</div>' +
+                    (!isCorrect ? '<div style="font-size:0.85rem;color:#16a34a;">Correct answer: ' + correctLabel + '</div>' : '') +
+                '</div></div>';
+        }).join('');
+
+        var isPass = !!attempt.passed;
+        return `
+        <div style="min-height:100vh;padding:calc(var(--header-height, 70px) + 30px) 0 60px;background:var(--bg-alt,#FAF7EE);">
+            <div class="container" style="max-width:680px;margin:0 auto;padding:0 20px;">
+                <div style="background:var(--bg-surface,#fff);border:1.5px solid var(--border);border-radius:20px;padding:36px 28px;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,0.05);">
+                    <div style="font-size:3rem;margin-bottom:8px;">${isPass ? '✅' : '📝'}</div>
+                    <h2 style="font-size:1.3rem;font-weight:900;margin-bottom:6px;color:var(--text-primary);">You Have Already Completed This Quiz</h2>
+                    <p style="color:var(--text-secondary);margin-bottom:18px;">${quiz.title || 'Quiz'} — Score: <strong>${attempt.score}/${attempt.total} (${attempt.percentage != null ? attempt.percentage : '—'}%)</strong></p>
+                    <div style="background:${isPass ? '#DCFCE7' : '#FEF2F2'};color:${isPass ? '#15803D' : '#DC2626'};border:1px solid ${isPass ? '#86EFAC' : '#FCA5A5'};border-radius:12px;padding:10px 16px;font-size:0.85rem;font-weight:700;margin-bottom:22px;display:inline-block;">
+                        ${isPass
+                            ? '🔒 Each quiz can only be taken once — review your answers below.'
+                            : '🔒 Each quiz can only be taken once, and the required score was not reached — review your answers below.'}
+                    </div>
+                    <div>
+                        <button class="btn btn-primary" onclick="navigate('${backUrl}')">&larr; Back to Lesson</button>
+                    </div>
+                </div>
+                <div style="background:var(--bg-surface,#fff);border:1.5px solid var(--border);border-radius:20px;margin-top:20px;overflow:hidden;">
+                    <div style="padding:16px 20px;border-bottom:1px solid var(--border);font-weight:800;color:var(--text-primary);">📋 Your Answers (${questions.length} Questions)</div>
+                    ${reviewRows}
+                </div>
+            </div>
+        </div>`;
+    }
 
     // ═══════════════════════════════════════════════════════════
     // TEST PAGE — صفحة الاختبار الكاملة والاحترافية
@@ -2367,9 +2646,9 @@
             return `<div style="padding:calc(var(--header-height,70px) + 40px) 0 60px;">
                 <div class="container"><div class="empty-state">
                     <div class="empty-state-icon">📝</div>
-                    <h3>الاختبار مش موجود</h3>
-                    <p>الاختبار اللي بتدور عليه (${quizId || '—'}) مش موجود.</p>
-                    <button class="btn btn-primary" onclick="history.back()">&larr; رجوع</button>
+                    <h3>Quiz Not Found</h3>
+                    <p>The quiz you are looking for (${quizId || '—'}) does not exist.</p>
+                    <button class="btn btn-primary" onclick="history.back()">&larr; Back</button>
                 </div></div></div>`;
         }
 
@@ -2377,7 +2656,10 @@
         var qCount = questions.length;
         var backUrl = courseId && lessonId ? 'lesson/' + courseId + '/' + lessonId : courseId ? 'license/' + courseId : 'courses';
 
-        // ── نتيجة سابقة ──────────────────────────────────────────
+        // ── نتيجة سابقة (فحص أولي سريع فقط لعرض أفضل عند التحميل — الفحص
+        //    الحقيقي والنهائي بيحصل بشكل غير متزامن جوه initTestPage عن
+        //    طريق قاعدة البيانات مباشرة، وهو اللي بيحدد فعليًا لو الطالب
+        //    يقدر يحل الاختبار ولا لأ. الفحص هنا لا يمنع أي حاجة نهائيًا) ──
         var prevAttempt = (typeof window.getQuizAttempt === 'function' && currentUser)
             ? window.getQuizAttempt(currentUser.id, quizId) : null;
 
@@ -2386,9 +2668,9 @@
 
             <!-- ── Header ── -->
             <div class="test-header">
-                <button class="test-back-btn" onclick="navigate('${backUrl}')" title="رجوع">&larr;</button>
+                <button class="test-back-btn" onclick="navigate('${backUrl}')" title="Back">&larr;</button>
                 <div class="test-header-info">
-                    <div class="test-title">${quiz.title || 'اختبار'}</div>
+                    <div class="test-title">${quiz.title || 'Quiz'}</div>
                     ${quiz.subject ? `<div class="test-subject">${quiz.subject}</div>` : ''}
                 </div>
                 <div class="test-header-meta">
@@ -2403,7 +2685,7 @@
                 <div class="test-progress-bar" id="testProgressBar" style="width:0%"></div>
             </div>
             <div class="test-progress-info">
-                <span>السؤال <strong id="testCurNum">1</strong> من <strong>${qCount}</strong></span>
+                <span>Question <strong id="testCurNum">1</strong> of <strong>${qCount}</strong></span>
                 <span id="testProgressPct">0%</span>
             </div>
 
@@ -2411,18 +2693,19 @@
             <div class="test-body">
                 <div class="test-questions-wrap" id="testQuestionsWrap">
                     ${questions.map(function (q, qi) {
-            var letters = ['أ', 'ب', 'ج', 'د', 'هـ', 'و'];
+            var letters = ['A', 'B', 'C', 'D', 'E', 'F'];
             var opts = Array.isArray(q.opts) ? q.opts : [];
             return `
                         <div class="test-question-slide ${qi === 0 ? 'active' : ''}" id="testQ_${qi}" data-qi="${qi}">
-                            <div class="test-q-num">السؤال ${qi + 1} من ${qCount}</div>
-                            ${q.mediaUrl ? `<div class="test-q-img"><img src="${q.mediaUrl}" style="max-width:${q.imageWidth || 360}px;${q.imageHeight ? 'height:' + q.imageHeight + 'px;' : ''}object-fit:contain;border-radius:12px;border:1px solid var(--border);" loading="lazy"></div>` : ''}
+                            <div class="test-q-num">Question ${qi + 1} of ${qCount}</div>
+                            ${q.mediaUrl ? `<div class="test-q-img"><img src="${q.mediaUrl}" style="max-width:min(${q.imageWidth || 360}px, 100%);${q.imageHeight ? 'height:' + q.imageHeight + 'px;' : ''}object-fit:contain;border-radius:12px;border:1px solid var(--border);" loading="lazy"></div>` : ''}
                             <div class="test-q-text">${q.q || ''}</div>
                             <div class="test-options" id="testOpts_${qi}">
                                 ${opts.map(function (opt, oi) {
                 return `<button class="test-option" data-qi="${qi}" data-oi="${oi}" onclick="selectTestOption(${qi}, ${oi}, this)">
                                         <span class="test-opt-letter">${letters[oi] || (oi + 1)}</span>
                                         <span class="test-opt-text">${opt}</span>
+                                        <span class="test-opt-check">✓</span>
                                     </button>`;
             }).join('')}
                             </div>
@@ -2434,7 +2717,7 @@
                 <!-- ── ناف الأسئلة (أزرار مربعة) ── -->
                 <div class="test-q-nav-grid" id="testQNavGrid">
                     ${questions.map(function (q, qi) {
-            return `<button class="test-q-nav-dot ${qi === 0 ? 'current' : ''}" id="testNav_${qi}" onclick="goToTestQ(${qi})" title="س${qi + 1}">${qi + 1}</button>`;
+            return `<button class="test-q-nav-dot ${qi === 0 ? 'current' : ''}" id="testNav_${qi}" onclick="goToTestQ(${qi})" title="Q${qi + 1}">${qi + 1}</button>`;
         }).join('')}
                 </div>
             </div>
@@ -2442,20 +2725,20 @@
             <!-- ── أزرار التنقل ── -->
             <div class="test-footer">
                 <button class="btn btn-outline" id="testPrevBtn" onclick="testNavQ(-1)" disabled>
-                    &larr; السابق
+                    &larr; Previous
                 </button>
                 <button class="btn btn-primary" id="testNextBtn" onclick="testNavQ(1)" ${qCount <= 1 ? 'style="display:none"' : ''}>
-                    التالي &rarr;
+                    Next &rarr;
                 </button>
                 <button class="btn btn-accent" id="testSubmitBtn" onclick="confirmSubmitTest()" style="${qCount > 1 ? 'display:none' : ''}">
-                    تسليم الاختبار ✅
+                    Submit Quiz ✅
                 </button>
             </div>
 
             <!-- ── ملحوظة أسفل الصفحة ── -->
             <div class="test-note">
-                <span>📌 تقدر تتنقّل بين الأسئلة قبل التسليم النهائي</span>
-                <span id="testAnsweredCount">0 / ${qCount} تمت الإجابة</span>
+                <span>📌 You can navigate between questions before final submission</span>
+                <span id="testAnsweredCount">0 / ${qCount} Answered</span>
             </div>
 
         </div>
@@ -2464,69 +2747,78 @@
         <div class="test-result-overlay" id="testResultOverlay" style="display:none;">
             <div class="test-result-modal" id="testResultModal">
                 <div class="trm-icon" id="trmIcon">🎉</div>
-                <h2 class="trm-title" id="trmTitle">نتيجة الاختبار</h2>
+                <h2 class="trm-title" id="trmTitle">Quiz Result</h2>
                 <div class="trm-score" id="trmScore">—</div>
                 <div class="trm-meta" id="trmMeta"></div>
                 <div class="trm-review" id="trmReview"></div>
-                <div class="trm-actions">
-                    <button class="btn btn-primary" onclick="navigate('${backUrl}')">&larr; الرجوع للدرس</button>
-                    <button class="btn btn-outline" onclick="retakeTest('${quizId}','${courseId}','${lessonId}')">🔁 أعد الاختبار</button>
+                <div id="trmGateMsg" style="display:none;margin-bottom:14px;padding:12px 18px;border-radius:14px;font-size:0.88rem;font-weight:700;text-align:center;"></div>
+                <div class="trm-actions" id="trmActions">
+                    <button class="btn btn-primary" onclick="navigate('${backUrl}')">&larr; Back to Lesson</button>
                 </div>
             </div>
         </div>
 
         <style>
         /* ═══════════════════════════════════════════════
-           TEST PAGE — Full Pro Styles
+           TEST PAGE — Premium Redesign
+           كل الـ id/class الوظيفية (زي .test-option, .selected,
+           .correct, .wrong, .test-q-nav-dot, .answered, .current)
+           اتسابت زي ما هي بالظبط عشان الـ JS شغال عليها مباشرة —
+           التعديل هنا بصري (CSS) فقط.
            ═══════════════════════════════════════════════ */
         body { overflow-x: hidden; }
         .test-page {
             min-height: 100vh;
             display: flex; flex-direction: column;
-            background: var(--bg-alt, #faf8fc);
+            background:
+                radial-gradient(1200px 600px at 15% -10%, rgba(16, 185, 129,0.06), transparent 60%),
+                radial-gradient(1000px 500px at 100% 0%, rgba(44, 74, 124,0.05), transparent 55%),
+                var(--bg-alt, #FAF7EE);
             padding-top: var(--header-height, 70px);
             font-family: 'Tajawal', sans-serif;
         }
         /* Header */
         .test-header {
             background: var(--bg-surface, #fff);
-            border-bottom: 1px solid var(--border, #e7e1f0);
+            border-bottom: 1px solid var(--border, #DCEBD9);
             padding: 14px 24px;
             display: flex; align-items: center; gap: 14px;
             position: sticky; top: var(--header-height, 70px); z-index: 100;
-            box-shadow: 0 2px 12px rgba(0,0,0,.06);
+            box-shadow: 0 2px 16px rgba(11, 42, 29,.05);
         }
         .test-back-btn {
-            width: 38px; height: 38px; border: 1.5px solid var(--border, #e7e1f0);
-            border-radius: 10px; background: var(--bg-alt, #faf8fc);
+            width: 38px; height: 38px; border: 1.5px solid var(--border, #DCEBD9);
+            border-radius: 12px; background: var(--bg-alt, #FAF7EE);
             font-size: 1.1rem; cursor: pointer; display: flex;
             align-items: center; justify-content: center;
-            color: var(--text-primary, #150e29); transition: background .2s;
+            color: var(--text-primary, #0B2A1D); transition: background .2s, border-color .2s;
         }
-        .test-back-btn:hover { background: var(--bg-surface, #fff); }
-        .test-header-info { flex: 1; }
-        .test-title { font-size: 1rem; font-weight: 900; color: var(--text-primary, #150e29); }
-        .test-subject { font-size: .8rem; color: var(--text-secondary, #6b6280); margin-top: 2px; }
+        .test-back-btn:hover { background: var(--primary-50, #fff7ed); border-color: var(--primary-300, #6EE7B7); }
+        .test-header-info { flex: 1; min-width: 0; }
+        .test-title { font-size: 1rem; font-weight: 900; color: var(--text-primary, #0B2A1D); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .test-subject { font-size: .8rem; color: var(--text-secondary, #5F7D6A); margin-top: 2px; }
         .test-timer-badge {
-            background: #fef3c7; color: #92400E; border: 1px solid #fde68a;
-            border-radius: 20px; padding: 5px 12px;
+            background: linear-gradient(135deg, #D1FAE5, #99F6E4);
+            color: #115E59; border: 1px solid #2DD4BF;
+            border-radius: 20px; padding: 6px 14px;
             font-size: .85rem; font-weight: 800; white-space: nowrap;
+            box-shadow: 0 2px 8px rgba(45, 212, 191,.25);
         }
-        .test-timer-badge.warning { background: #fef2f2; color: #dc2626; border-color: #fca5a5; animation: timerPulse 1s infinite; }
+        .test-timer-badge.warning { background: linear-gradient(135deg,#fee2e2,#fecaca); color: #dc2626; border-color: #fca5a5; animation: timerPulse 1s infinite; }
         @keyframes timerPulse { 0%,100%{opacity:1} 50%{opacity:.6} }
 
         /* Progress */
         .test-progress-bar-wrap {
-            height: 6px; background: var(--border, #e7e1f0); position: relative;
+            height: 6px; background: var(--border, #DCEBD9); position: relative;
         }
         .test-progress-bar {
-            height: 100%; background: linear-gradient(90deg, #8b5cf6, #8b5cf6);
+            height: 100%; background: var(--accent-gradient, linear-gradient(90deg, #10B981, #059669));
             border-radius: 0 4px 4px 0; transition: width .4s ease;
         }
         .test-progress-info {
-            display: flex; justify-content: space-between;
-            padding: 8px 24px; font-size: .82rem;
-            color: var(--text-secondary, #6b6280); font-weight: 600;
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 10px 24px; font-size: .82rem;
+            color: var(--text-secondary, #5F7D6A); font-weight: 700;
         }
 
         /* Body */
@@ -2537,50 +2829,103 @@
 
         /* Question slides */
         .test-questions-wrap { position: relative; }
-        .test-question-slide { display: none; animation: slideIn .25s ease; }
+        .test-question-slide { display: none; animation: slideIn .3s ease; }
         .test-question-slide.active { display: block; }
-        @keyframes slideIn { from{opacity:0;transform:translateX(20px)} to{opacity:1;transform:translateX(0)} }
+        @keyframes slideIn { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
 
+        /* ── Question badge (was a plain uppercase label) ── */
         .test-q-num {
-            font-size: .78rem; font-weight: 800; color: var(--primary-600, #7c3aed);
-            margin-bottom: 10px; text-transform: uppercase;
+            display: inline-flex; align-items: center; gap: 6px;
+            font-size: .75rem; font-weight: 900; letter-spacing: .03em;
+            color: #fff; text-transform: uppercase;
+            background: var(--accent-gradient, linear-gradient(135deg, #10B981, #059669));
+            padding: 6px 14px; border-radius: 999px;
+            margin-bottom: 16px;
+            box-shadow: 0 4px 12px rgba(16, 185, 129,.28);
         }
-        .test-q-img { text-align: center; margin-bottom: 14px; }
+        .test-q-img { text-align: center; margin-bottom: 16px; }
+
+        /* ── Question card: مساحة منفصلة تمامًا عن الاختيارات ── */
         .test-q-text {
-            font-size: 1.05rem; font-weight: 700; line-height: 1.7;
-            color: var(--text-primary, #150e29);
-            margin-bottom: 20px;
+            font-size: 1.15rem; font-weight: 800; line-height: 1.75;
+            color: var(--text-primary, #0B2A1D);
+            margin-bottom: 22px;
             background: var(--bg-surface, #fff);
-            border: 1.5px solid var(--border, #e7e1f0);
-            border-radius: 16px; padding: 18px 20px;
+            border: 1px solid var(--border, #DCEBD9);
+            border-radius: 20px; padding: 24px 26px;
+            box-shadow: 0 6px 24px rgba(11, 42, 29,.05);
+            position: relative;
         }
-        .test-options { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+        .test-q-text::before {
+            content: '';
+            position: absolute; inset-inline-start: 0; top: 14px; bottom: 14px;
+            width: 4px; border-radius: 4px;
+            background: var(--accent-gradient, linear-gradient(180deg, #10B981, #059669));
+        }
+
+        .test-options { display: flex; flex-direction: column; gap: 12px; margin-bottom: 18px; }
+
+        /* ── Option card ── default / hover / selected حالات منفصلة تمامًا ── */
         .test-option {
-            display: flex; align-items: center; gap: 14px;
+            position: relative;
+            display: flex; align-items: center; gap: 16px;
             background: var(--bg-surface, #fff);
-            border: 2px solid var(--border, #e7e1f0);
-            border-radius: 14px; padding: 14px 18px;
+            border: 2px solid var(--border, #DCEBD9);
+            border-radius: 16px; padding: 16px 20px;
             cursor: pointer; text-align: right;
-            font-family: 'Tajawal', sans-serif; font-size: .95rem; font-weight: 600;
-            color: var(--text-primary, #150e29);
-            transition: border-color .15s, background .15s, transform .1s;
+            font-family: 'Tajawal', sans-serif; font-size: .98rem; font-weight: 700;
+            color: var(--text-primary, #0B2A1D);
+            transition: border-color .18s ease, box-shadow .18s ease, transform .12s ease, background-color .18s ease;
             width: 100%;
         }
-        .test-option:hover { border-color: var(--primary-400, #60a5fa); background: #eff6ff; transform: translateX(-2px); }
-        .test-option.selected { border-color: var(--primary-600, #7c3aed); background: #eff6ff; }
-        .test-option.correct  { border-color: #16a34a; background: #dcfce7; }
-        .test-option.wrong    { border-color: #dc2626; background: #fef2f2; }
-        .test-opt-letter {
-            min-width: 34px; height: 34px; border-radius: 10px;
-            background: var(--bg-alt, #f3eff7);
-            display: flex; align-items: center; justify-content: center;
-            font-size: .85rem; font-weight: 900; color: var(--primary-600, #7c3aed);
-            flex-shrink: 0; transition: background .15s, color .15s;
+        /* Hover = حركة بسيطة وناعمة فقط، ومحدود بالحالة غير المختارة عشان
+           ميتخلطش بصريًا مع .selected أبدًا مهما تحرك الماوس */
+        .test-option:not(.selected):not(.correct):not(.wrong):hover {
+            border-color: var(--primary-300, #6EE7B7);
+            box-shadow: 0 6px 18px rgba(11, 42, 29,.07);
+            transform: translateY(-2px);
         }
-        .test-option.selected .test-opt-letter { background: var(--primary-600, #7c3aed); color: #fff; }
+        .test-option:active { transform: translateY(0) scale(.995); }
+
+        /* Selected = حالة قوية وواضحة جدًا، مستقلة تمامًا عن hover */
+        .test-option.selected {
+            border-color: var(--primary-500, #10B981);
+            background: var(--primary-50, #fff7ed);
+            box-shadow: 0 8px 22px rgba(16, 185, 129,.16);
+        }
+        .test-option.correct  { border-color: #16a34a; background: #f0fdf4; }
+        .test-option.wrong    { border-color: #dc2626; background: #fef2f2; }
+
+        .test-opt-letter {
+            min-width: 38px; height: 38px; border-radius: 50%;
+            background: var(--bg-alt, #F1F7F0);
+            display: flex; align-items: center; justify-content: center;
+            font-size: .88rem; font-weight: 900; color: var(--primary-600, #059669);
+            flex-shrink: 0; transition: background .18s, color .18s, transform .18s;
+        }
+        .test-option.selected .test-opt-letter {
+            background: var(--accent-gradient, linear-gradient(135deg,#10B981,#059669));
+            color: #fff; transform: scale(1.06);
+        }
         .test-option.correct  .test-opt-letter { background: #16a34a; color: #fff; }
         .test-option.wrong    .test-opt-letter { background: #dc2626; color: #fff; }
-        .test-opt-text { flex: 1; }
+        .test-opt-text { flex: 1; line-height: 1.6; }
+
+        /* Check indicator — بيظهر بس مع .selected (نفس الكلاس اللي الجافاسكريبت
+           بيحطه فعلاً، مفيش أي منطق جديد، مجرد عنصر بصري إضافي) */
+        .test-opt-check {
+            width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+            display: none; align-items: center; justify-content: center;
+            background: var(--primary-500, #10B981); color: #fff;
+            font-size: .78rem; font-weight: 900;
+        }
+        .test-option.selected .test-opt-check { display: flex; }
+        .test-option.correct  .test-opt-check { display: flex; background: #16a34a; }
+        .test-option.wrong    .test-opt-check { display: none; }
+
+        .test-option:focus-visible {
+            outline: 2.5px solid var(--primary-400, #34D399); outline-offset: 2px;
+        }
 
         .test-q-hint {
             padding: 10px 14px; border-radius: 10px;
@@ -2589,20 +2934,30 @@
         .test-q-hint.correct { background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; }
         .test-q-hint.wrong   { background: #fef2f2; color: #dc2626; border: 1px solid #fca5a5; }
 
-        /* Question Nav Grid */
+        /* ── Question Nav Grid — أرقام أنيقة بحالات واضحة ── */
         .test-q-nav-grid {
-            display: flex; flex-wrap: wrap; gap: 8px;
-            padding: 16px 0; margin-top: 8px;
+            display: flex; flex-wrap: wrap; gap: 10px;
+            padding: 18px 0 6px; margin-top: 10px;
+            border-top: 1px dashed var(--border, #DCEBD9);
         }
         .test-q-nav-dot {
-            width: 36px; height: 36px; border-radius: 10px;
-            border: 2px solid var(--border, #e7e1f0);
+            width: 40px; height: 40px; border-radius: 12px;
+            border: 2px solid var(--border, #DCEBD9);
             background: var(--bg-surface, #fff);
-            font-size: .82rem; font-weight: 800; cursor: pointer;
-            color: var(--text-secondary, #6b6280); transition: all .15s;
+            font-size: .85rem; font-weight: 800; cursor: pointer;
+            color: var(--text-secondary, #5F7D6A); transition: all .18s;
+            position: relative;
         }
-        .test-q-nav-dot.current  { border-color: var(--primary-600, #7c3aed); color: var(--primary-600, #7c3aed); }
-        .test-q-nav-dot.answered { background: var(--primary-600, #7c3aed); border-color: var(--primary-600, #7c3aed); color: #fff; }
+        .test-q-nav-dot:hover { border-color: var(--primary-300, #6EE7B7); transform: translateY(-1px); }
+        /* Answered = تم الإجابة (مش بالضرورة السؤال الحالي) */
+        .test-q-nav-dot.answered { background: var(--primary-100, #ffedd5); border-color: var(--primary-300, #6EE7B7); color: var(--primary-700, #047857); }
+        /* Current = السؤال المعروض دلوقتي — Ring مميز يتراكب فوق أي حالة تانية */
+        .test-q-nav-dot.current {
+            border-color: var(--primary-500, #10B981);
+            background: var(--accent-gradient, linear-gradient(135deg,#10B981,#059669));
+            color: #fff;
+            box-shadow: 0 0 0 4px rgba(16, 185, 129,.18);
+        }
 
         /* Footer */
         .test-footer {
@@ -2613,69 +2968,106 @@
         .test-note {
             max-width: 720px; width: 100%; margin: 0 auto 20px;
             padding: 0 20px; display: flex; justify-content: space-between;
-            font-size: .8rem; color: var(--text-muted, #9c93ad);
+            font-size: .8rem; color: var(--text-muted, #8FAB97);
         }
 
         /* Result Modal */
         .test-result-overlay {
-            position: fixed; inset: 0; background: rgba(0,0,0,.65);
+            position: fixed; inset: 0; background: rgba(11, 42, 29,.6);
             z-index: 9999; display: flex; align-items: center; justify-content: center;
             backdrop-filter: blur(6px); padding: 16px;
         }
         .test-result-modal {
             background: var(--bg-surface, #fff); border-radius: 28px;
             padding: 40px 32px; max-width: 480px; width: 100%;
-            text-align: center; box-shadow: 0 32px 80px rgba(0,0,0,.25);
+            text-align: center; box-shadow: 0 32px 80px rgba(11, 42, 29,.25);
             animation: resultIn .4s cubic-bezier(.34,1.56,.64,1);
         }
         @keyframes resultIn { from{opacity:0;transform:scale(.8)} to{opacity:1;transform:scale(1)} }
         .trm-icon { font-size: 4rem; margin-bottom: 12px; }
-        .trm-title { font-size: 1.4rem; font-weight: 900; margin-bottom: 8px; color: var(--text-primary, #150e29); }
-        .trm-score { font-size: 3rem; font-weight: 900; margin: 12px 0; color: var(--primary-600, #7c3aed); }
+        .trm-title { font-size: 1.4rem; font-weight: 900; margin-bottom: 8px; color: var(--text-primary, #0B2A1D); }
+        .trm-score { font-size: 3rem; font-weight: 900; margin: 12px 0; color: var(--primary-600, #059669); }
         .trm-meta { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; margin-bottom: 16px; font-size: .9rem; }
         .trm-meta-item { padding: 6px 14px; border-radius: 20px; font-weight: 700; }
         .trm-correct { background: #dcfce7; color: #16a34a; }
         .trm-wrong   { background: #fef2f2; color: #dc2626; }
-        .trm-pct     { background: #F1ECFF; color: #5B21B6; }
+        .trm-pct     { background: #FFF7ED; color: #047857; }
         .trm-review { max-height: 260px; overflow-y: auto; text-align: right; margin-bottom: 20px; }
         .trm-q-row {
             display: flex; align-items: flex-start; gap: 10px;
-            padding: 10px 0; border-bottom: 1px solid var(--border, #e7e1f0);
+            padding: 10px 0; border-bottom: 1px solid var(--border, #DCEBD9);
             font-size: .85rem;
         }
         .trm-q-row:last-child { border-bottom: none; }
         .trm-q-mark { font-size: 1rem; flex-shrink: 0; }
         .trm-q-info { flex: 1; }
         .trm-q-text { font-weight: 700; margin-bottom: 3px; }
-        .trm-q-answer { color: var(--text-secondary, #6b6280); }
+        .trm-q-answer { color: var(--text-secondary, #5F7D6A); }
         .trm-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
 
         /* Dark mode */
-        [data-theme=dark] .test-page { background: #120a22; }
-        [data-theme=dark] .test-header { background: #1C1430; border-color: #1f2937; }
-        [data-theme=dark] .test-q-text { background: #1C1430; border-color: #1f2937; color: #e7e1f0; }
-        [data-theme=dark] .test-option { background: #1C1430; border-color: #1f2937; color: #e7e1f0; }
-        [data-theme=dark] .test-option:hover { background: rgba(139, 92, 246,.1); }
-        [data-theme=dark] .test-option.selected { background: rgba(139, 92, 246,.15); }
-        [data-theme=dark] .test-q-nav-dot { background: #241a3d; border-color: #392F52; color: #9c93ad; }
-        [data-theme=dark] .test-result-modal { background: #1C1430; }
-        [data-theme=dark] .trm-title { color: #e7e1f0; }
+        [data-theme=dark] .test-page { background: #07130D; }
+        [data-theme=dark] .test-header { background: #0B2A1D; border-color: #1f2937; }
+        [data-theme=dark] .test-q-text { background: #0B2A1D; border-color: #1f2937; color: #DCEBD9; }
+        [data-theme=dark] .test-option { background: #0B2A1D; border-color: #1f2937; color: #DCEBD9; }
+        [data-theme=dark] .test-option:not(.selected):not(.correct):not(.wrong):hover { border-color: var(--primary-500, #10B981); box-shadow: 0 6px 18px rgba(0,0,0,.35); }
+        [data-theme=dark] .test-option.selected { background: rgba(16, 185, 129,.12); }
+        [data-theme=dark] .test-opt-letter { background: #143D2B; }
+        [data-theme=dark] .test-q-nav-dot { background: #143D2B; border-color: #24402F; color: #8FAB97; }
+        [data-theme=dark] .test-q-nav-dot.answered { background: rgba(16, 185, 129,.18); border-color: var(--primary-500,#10B981); color: var(--primary-300,#6EE7B7); }
+        [data-theme=dark] .test-result-modal { background: #0B2A1D; }
+        [data-theme=dark] .trm-title { color: #DCEBD9; }
 
         @media (max-width: 600px) {
-            .test-header { padding: 12px 14px; }
-            .test-body { padding: 16px 12px 0; }
-            .test-q-text { font-size: .95rem; padding: 14px 16px; }
-            .test-option { padding: 12px 14px; font-size: .9rem; }
-            .test-footer { padding: 12px 12px; }
-            .test-result-modal { padding: 28px 20px; }
-            .trm-score { font-size: 2.2rem; }
+            .test-page { overflow-x: hidden; }
+            .test-header { padding: 10px 12px; gap: 10px; }
+            .test-title { font-size: .92rem; }
+            .test-subject { font-size: .72rem; }
+            .test-back-btn { width: 34px; height: 34px; font-size: 1rem; flex-shrink: 0; }
+            .test-timer-badge { font-size: .78rem; padding: 5px 10px; flex-shrink: 0; }
+            .test-progress-info { padding: 8px 14px; font-size: .76rem; }
+            .test-body { padding: 14px 10px 0; }
+            .test-q-num { font-size: .68rem; padding: 5px 12px; margin-bottom: 12px; }
+            .test-q-text { font-size: 1rem; line-height: 1.65; padding: 16px 16px; margin-bottom: 16px; }
+            .test-options { gap: 10px; }
+            .test-option { padding: 14px 14px; font-size: .92rem; gap: 12px; min-height: 48px; }
+            .test-opt-letter { min-width: 34px; height: 34px; font-size: .8rem; }
+            .test-opt-check { width: 20px; height: 20px; font-size: .68rem; }
+            .test-q-nav-grid { gap: 8px; padding: 14px 0 4px; }
+            .test-q-nav-dot { width: 38px; height: 38px; font-size: .8rem; }
+            .test-footer { padding: 10px 10px 14px; gap: 10px; }
+            .test-footer .btn { flex: 1; min-height: 48px; font-size: .92rem; padding: 12px 10px; white-space: nowrap; }
+            .test-note { flex-direction: column; gap: 4px; padding: 0 12px; font-size: .74rem; }
+            .test-result-modal { padding: 26px 18px; border-radius: 22px; max-height: 90vh; overflow-y: auto; }
+            .trm-icon { font-size: 3rem; }
+            .trm-score { font-size: 2.1rem; margin: 8px 0; }
+            .trm-title { font-size: 1.1rem; }
+            .trm-meta { gap: 8px; font-size: .8rem; }
+            .trm-meta-item { padding: 5px 10px; }
+            .trm-actions { flex-direction: column; }
+            .trm-actions .btn { width: 100%; min-height: 46px; }
         }
-        </style>
 
-        <script>
+        /* منع أي Scroll أفقي بسبب صورة سؤال أعرض من الشاشة أو أي عنصر تاني */
+        .test-page, .test-page * { max-width: 100%; box-sizing: border-box; }
+        .test-q-text, .test-opt-text { overflow-wrap: break-word; word-break: break-word; }
+        </style>
+        `;
+    }
+
+    // ── Test Page Init — منطق التفاعل الحقيقي (منفصل عن renderTestPage) ──
+    // ملحوظة مهمة جداً: أي <script> بيتحط جوه HTML عن طريق .innerHTML،
+    // المتصفح بيتجاهله ومابيشغّلوش خالص (سلوك موثّق في كل المتصفحات) —
+    // وده كان هو السبب الحقيقي وراء إن زر Next وتثبيت الإجابات ماكانوش
+    // بيشتغلوا: الكود التفاعلي بالكامل كان جوه <script> زي ده جوه الـ
+    // Template، ومكانش بينفّذ إطلاقاً بعد إدراج الصفحة. باقي صفحات المنصة
+    // (زي renderLessonPage + initLessonPage) شغالة بنمط "render الـ HTML
+    // الأول، وبعدين نداء دالة init() حقيقية منفصلة" — وده بالظبط اللي
+    // طبّقته هنا عشان يتماشى مع باقي المنصة ويشتغل فعليًا هذه المرة.
+    function initTestPage(quizId, courseId, lessonId) {
         (function() {
             // ── State ────────────────────────────────────────────────
-            var _quiz      = window.getQuizById ? window.getQuizById('${quizId}') : null;
+            var _quiz      = window.getQuizById ? window.getQuizById(quizId) : null;
             var _questions = _quiz ? (_quiz.questionsList || []) : [];
             var _qCount    = _questions.length;
             var _answers   = {}; // qi → oi
@@ -2683,7 +3075,7 @@
             var _submitted = false;
             var _timer     = null;
             var _timeLeft  = (_quiz && _quiz.time) ? _quiz.time * 60 : 0;
-            var _letters   = ['أ','ب','ج','د','هـ','و'];
+            var _letters   = ['A','B','C','D','E','F'];
 
             // ── Select Option ─────────────────────────────────────────
             window.selectTestOption = function(qi, oi, btn) {
@@ -2709,7 +3101,7 @@
             function updateAnsweredCount() {
                 var cnt = Object.keys(_answers).length;
                 var el = document.getElementById('testAnsweredCount');
-                if (el) el.textContent = cnt + ' / ' + _qCount + ' تمت الإجابة';
+                if (el) el.textContent = cnt + ' / ' + _qCount + ' Answered';
             }
 
             function updateProgress() {
@@ -2760,7 +3152,7 @@
             window.confirmSubmitTest = function() {
                 var unanswered = _qCount - Object.keys(_answers).length;
                 if (unanswered > 0) {
-                    if (!confirm('لسه فاضلك ' + unanswered + ' سؤال من غير إجابة. عايز تسلّم دلوقتي؟')) return;
+                    if (!confirm('You have ' + unanswered + ' unanswered question(s). Do you want to submit now?')) return;
                 }
                 submitTest();
             };
@@ -2791,8 +3183,8 @@
                         '<div class="trm-q-info">' +
                             '<div class="trm-q-text">' + (qi + 1) + '. ' + (q.q || '').slice(0, 80) + (q.q && q.q.length > 80 ? '…' : '') + '</div>' +
                             '<div class="trm-q-answer">' +
-                                '<span style="color:' + (isCorrect ? '#16a34a' : '#dc2626') + ';">إجابتك: ' + chosenLabel + '</span>' +
-                                (!isCorrect ? ' &nbsp;|&nbsp; <span style="color:#16a34a;">الإجابة الصحيحة: ' + correctLabel + '</span>' : '') +
+                                '<span style="color:' + (isCorrect ? '#16a34a' : '#dc2626') + ';">Your answer: ' + chosenLabel + '</span>' +
+                                (!isCorrect ? ' &nbsp;|&nbsp; <span style="color:#16a34a;">Correct answer: ' + correctLabel + '</span>' : '') +
                             '</div>' +
                         '</div></div>';
                 }).join('');
@@ -2803,34 +3195,66 @@
 
                 // عرض النتيجة
                 document.getElementById('trmIcon').textContent  = emoji;
-                document.getElementById('trmTitle').textContent = pass ? 'أحسنت! نجحت في الاختبار' : 'كمّل تدريبك!';
+                document.getElementById('trmTitle').textContent = pass ? 'Great Job! Quiz Passed' : 'Keep Practicing!';
                 document.getElementById('trmScore').textContent = earnedPoints + ' / ' + totalPoints;
                 document.getElementById('trmMeta').innerHTML =
-                    '<span class="trm-meta-item trm-correct">✅ ' + correct + ' صح</span>' +
-                    '<span class="trm-meta-item trm-wrong">❌ ' + wrong + ' غلط</span>' +
-                    (skipped > 0 ? '<span class="trm-meta-item" style="background:#f3eff7;color:#6b6280;">⬜ ' + skipped + ' متروك</span>' : '') +
+                    '<span class="trm-meta-item trm-correct">✅ ' + correct + ' Correct</span>' +
+                    '<span class="trm-meta-item trm-wrong">❌ ' + wrong + ' Wrong</span>' +
+                    (skipped > 0 ? '<span class="trm-meta-item" style="background:#F1F7F0;color:#5F7D6A;">⬜ ' + skipped + ' Skipped</span>' : '') +
                     '<span class="trm-meta-item trm-pct">' + pct + '%</span>';
                 document.getElementById('trmReview').innerHTML = reviewRows;
                 document.getElementById('testResultOverlay').style.display = 'flex';
 
-                // حفظ النتيجة
+                // quiz-gate: show pass/fail unlock message
+                var _passRate = (_quiz && (_quiz.averageGrade || _quiz.passingGrade)) || 50;
+                var _gateEl = document.getElementById('trmGateMsg');
+                if (_gateEl) {
+                    _gateEl.style.display = 'block';
+                    if (pass) {
+                        _gateEl.style.background = '#DCFCE7';
+                        _gateEl.style.color = '#15803D';
+                        _gateEl.style.border = '1px solid #86EFAC';
+                        _gateEl.innerHTML = '&#10003; Passed! The next lesson is now unlocked.';
+                    } else {
+                        _gateEl.style.background = '#FEF2F2';
+                        _gateEl.style.color = '#DC2626';
+                        _gateEl.style.border = '1px solid #FECACA';
+                        _gateEl.innerHTML = '&#128274; Score ' + pct + '% &mdash; need ' + _passRate + '% to unlock the next lesson. Please retake the quiz.';
+                    }
+                }
+
+                // حفظ النتيجة — بنفس أسماء الحقول اللي شاشة "نتائج الاختبار"
+                // في الداشبورد بتتوقعها فعليًا (studentName/studentId/totalPoints/
+                // studentCode/elapsedTime)، + نفس الأسماء القديمة (userId/userName/
+                // total) اللي باقي كود الطالب هنا بيعتمد عليها — نفس القيمة بس
+                // باسمين، بدون ما نلمس أي كود تاني في الداشبورد أو في الطالب.
                 if (window.saveQuizAttempt) {
+                    var _uid = _userId || (window.currentUser && window.currentUser.id) || 'guest';
+                    var _uname = (currentUser && currentUser.name) || (window.currentUser && window.currentUser.name) || '—';
+                    var _ucode = (currentUser && (currentUser.code || currentUser.qrCode || currentUser.studentCode))
+                        || (window.currentUser && (window.currentUser.code || window.currentUser.qrCode)) || _uid;
                     var attempt = {
-                        userId:      (window.currentUser && window.currentUser.id) || 'guest',
-                        userName:    (window.currentUser && window.currentUser.name) || '—',
-                        quizId:      '${quizId}',
-                        courseId:    '${courseId}',
-                        lessonId:    '${lessonId}',
+                        userId:      _uid,
+                        studentId:   _uid,
+                        userName:    _uname,
+                        studentName: _uname,
+                        studentCode: _ucode,
+                        quizId:      quizId,
+                        courseId:    courseId,
+                        lessonId:    lessonId,
                         quizTitle:   (_quiz && _quiz.title) || '—',
                         score:       earnedPoints,
                         total:       totalPoints,
+                        totalPoints: totalPoints,
                         correct:     correct,
                         wrong:       wrong,
                         skipped:     skipped,
                         percentage:  pct,
                         passed:      pass,
                         answers:     _answers,
-                        submittedAt: new Date().toISOString()
+                        startedAt:   new Date(_startedAtMs).toISOString(),
+                        submittedAt: new Date().toISOString(),
+                        elapsedTime: Math.max(0, Math.floor((Date.now() - _startedAtMs) / 1000))
                     };
                     window.saveQuizAttempt(attempt);
                 }
@@ -2852,29 +3276,67 @@
                 navigate('test/' + [qid,cid,lid].filter(Boolean).join('/'));
             };
 
-            // ── Timer ─────────────────────────────────────────────────
-            if (_timeLeft > 0) {
-                _timer = setInterval(function() {
-                    _timeLeft--;
-                    var m = Math.floor(_timeLeft / 60);
-                    var s = _timeLeft % 60;
-                    var el = document.getElementById('testTimerDisplay');
-                    if (el) el.textContent = m + ':' + (s < 10 ? '0' : '') + s;
-                    var badge = document.getElementById('testTimerBadge');
-                    if (badge) badge.classList.toggle('warning', _timeLeft <= 60);
-                    if (_timeLeft <= 0) {
-                        clearInterval(_timer);
-                        if (!_submitted) submitTest();
-                    }
-                }, 1000);
+            // ── بدء/استئناف المحاولة من Backend (Firebase) ──────────────
+            // ده اللي بيحدد الوقت المتبقي الحقيقي (مش quiz.time كاملة كل
+            // مرة) ولو الطالب حل الاختبار فعلاً من قبل (حتى من جهاز تاني)
+            var _startedAtMs = Date.now();
+            var _userId = (currentUser && currentUser.id) || (window.currentUser && window.currentUser.id) || null;
+
+            function startTimerAndShowQuestions() {
+                if (_timeLeft > 0) {
+                    var m0 = Math.floor(_timeLeft / 60), s0 = _timeLeft % 60;
+                    var elDisp = document.getElementById('testTimerDisplay');
+                    if (elDisp) elDisp.textContent = m0 + ':' + (s0 < 10 ? '0' : '') + s0;
+
+                    _timer = setInterval(function() {
+                        _timeLeft--;
+                        var m = Math.floor(_timeLeft / 60);
+                        var s = _timeLeft % 60;
+                        var el = document.getElementById('testTimerDisplay');
+                        if (el) el.textContent = m + ':' + (s < 10 ? '0' : '') + s;
+                        var badge = document.getElementById('testTimerBadge');
+                        if (badge) badge.classList.toggle('warning', _timeLeft <= 60);
+                        if (_timeLeft <= 0) {
+                            clearInterval(_timer);
+                            if (!_submitted) submitTest();
+                        }
+                    }, 1000);
+                }
+                window.goToTestQ(0);
+                updateAnsweredCount();
+                updateProgress();
             }
 
-            // ── Init ──────────────────────────────────────────────────
-            window.goToTestQ(0);
-            updateAnsweredCount();
-            updateProgress();
+            if (_userId && typeof window.beginOrResumeQuizAttempt === 'function') {
+                window.beginOrResumeQuizAttempt(_userId, quizId, courseId, lessonId, (_quiz && _quiz.time) ? _quiz.time * 60 : 0)
+                    .then(function(result) {
+                        if (result.already) {
+                            // اتحل بالفعل (من أي جهاز) — بدّل المحتوى بصفحة "شاهد نتيجتك" فورًا
+                            var appContent = document.getElementById('app-content');
+                            if (appContent) {
+                                appContent.innerHTML = renderAlreadyPassedQuizPage(_quiz, result.attempt, courseId, lessonId,
+                                    (courseId && lessonId ? 'lesson/' + courseId + '/' + lessonId : (courseId ? 'license/' + courseId : 'courses')));
+                            }
+                            return;
+                        }
+                        _startedAtMs = result.startedAtMs || _startedAtMs;
+                        if (result.remainingSeconds !== null && result.remainingSeconds !== undefined) {
+                            _timeLeft = result.remainingSeconds;
+                        }
+                        if (_timeLeft <= 0 && (_quiz && _quiz.time)) {
+                            // الوقت خلص فعلاً (مثلاً الطالب سايب الصفحة فاتحة) — سلّم فورًا
+                            startTimerAndShowQuestions();
+                            submitTest();
+                            return;
+                        }
+                        startTimerAndShowQuestions();
+                    })
+                    .catch(function() { startTimerAndShowQuestions(); });
+            } else {
+                // لا يوجد مستخدم/Firebase متاح — نفس السلوك القديم بدون تغيير
+                startTimerAndShowQuestions();
+            }
         })();
-        <\/script>`;
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -2891,13 +3353,13 @@
                     <div class="admin-course-row-title">${c.title}</div>
                     <div class="admin-course-row-meta">
                         <span class="badge ${c.isFree ? 'badge-success' : 'badge-primary'}">  ${c.gradeTag}</span>
-                        <span class="admin-meta-stat">📦 ${lessons.length} درس</span>
-                        <span class="admin-meta-stat">📋 ${contents} عنصر</span>
+                        <span class="admin-meta-stat">📦 ${lessons.length} lessons</span>
+                        <span class="admin-meta-stat">📋 ${contents} items</span>
                     </div>
                 </div>
                 <div class="admin-course-row-actions">
                     <button class="btn btn-primary btn-sm" onclick="navigate('admin-course/${c.id}')">
-                        🗂 إدارة الدروس
+                        🗂 Manage Lessons
                     </button>
                 </div>
             </div>`;
@@ -2908,22 +3370,22 @@
             <div class="container">
                 <div class="admin-page-header reveal">
                     <div>
-                        <div class="section-badge"><span>🛠</span> لوحة التحكم</div>
-                        <h1>إدارة الكورسات والدروس</h1>
-                        <p>اختر كورس عشان تدير دروسه ومحتوياته</p>
+                        <div class="section-badge"><span>🛠</span> Admin Panel</div>
+                        <h1>Manage Courses &amp; Lessons</h1>
+                        <p>Select a course to manage its lessons and content items</p>
                     </div>
                     <div class="admin-header-stats">
                         <div class="admin-stat-pill">
                             <span class="admin-stat-num">${getAllCourses().length}</span>
-                            <span class="admin-stat-lbl">كورس</span>
+                            <span class="admin-stat-lbl">Courses</span>
                         </div>
                         <div class="admin-stat-pill">
                             <span class="admin-stat-num">${getLessons().length}</span>
-                            <span class="admin-stat-lbl">درس</span>
+                            <span class="admin-stat-lbl">Lessons</span>
                         </div>
                         <div class="admin-stat-pill">
                             <span class="admin-stat-num">${getContents().length}</span>
-                            <span class="admin-stat-lbl">محتوى</span>
+                            <span class="admin-stat-lbl">Contents</span>
                         </div>
                     </div>
                 </div>
@@ -2945,8 +3407,8 @@
         const lessonsHTML = lessons.length === 0
             ? `<div class="admin-empty-lessons">
                 <div style="font-size:3rem;">📭</div>
-                <h3>لسه معملتش دروس</h3>
-                <p>اضغط "إضافة درس جديد" عشان تنشئ أول درس في الكورس ده</p>
+                <h3>No Lessons Yet</h3>
+                <p>Click "Add New Lesson" to create the first lesson in this course</p>
                </div>`
             : lessons.map((lesson, li) => renderLessonBox(lesson, li)).join('');
 
@@ -2956,7 +3418,7 @@
 
                 <!-- Breadcrumb -->
                 <div class="admin-breadcrumb reveal">
-                    <a href="#admin" class="admin-breadcrumb-link">🛠 لوحة التحكم</a>
+                    <a href="#admin" class="admin-breadcrumb-link">🛠 Admin</a>
                     <span class="admin-breadcrumb-sep">›</span>
                     <span>${course.title}</span>
                 </div>
@@ -2969,13 +3431,13 @@
                             <h1>${course.title}</h1>
                             <div class="admin-course-page-meta">
                                 <span class="badge ${course.isFree ? 'badge-success' : 'badge-primary'}">${course.gradeTag}</span>
-                                <span>${lessons.length} درس</span>
-                                <span>${lessons.reduce((acc, l) => acc + getLessonContents(l.lessonId).length, 0)} عنصر</span>
+                                <span>${lessons.length} lessons</span>
+                                <span>${lessons.reduce((acc, l) => acc + getLessonContents(l.lessonId).length, 0)} items</span>
                             </div>
                         </div>
                     </div>
                     <button class="btn btn-primary btn-lg" onclick="openLessonModal(null, '${courseId}')">
-                        ＋ إضافة درس جديد
+                        ＋ Add New Lesson
                     </button>
                 </div>
 
@@ -2991,37 +3453,37 @@
         <div class="admin-modal-overlay" id="lessonModalOverlay" onclick="closeLessonModal()">
             <div class="admin-modal" onclick="event.stopPropagation()" id="lessonModal">
                 <div class="admin-modal-header">
-                    <h3 id="lessonModalTitle">إضافة درس جديد</h3>
+                    <h3 id="lessonModalTitle">Add New Lesson</h3>
                     <button class="admin-modal-close" onclick="closeLessonModal()">✕</button>
                 </div>
                 <div class="admin-modal-body">
                     <input type="hidden" id="lessonModalId">
                     <input type="hidden" id="lessonModalCourseId" value="${courseId}">
                     <div class="form-group">
-                        <label class="form-label">عنوان الدرس <span style="color:var(--danger)">*</span></label>
-                        <input type="text" class="form-input" id="lessonModalName" placeholder="مثال: مقدمة في الجبر" maxlength="120">
+                        <label class="form-label">Lesson Title <span style="color:var(--danger)">*</span></label>
+                        <input type="text" class="form-input" id="lessonModalName" placeholder="e.g. Introduction to Cell Biology" maxlength="120">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">وصف الدرس</label>
-                        <textarea class="form-input" id="lessonModalDesc" rows="3" placeholder="نظرة عامة مختصرة عن الدرس..." style="resize:vertical;"></textarea>
+                        <label class="form-label">Lesson Description</label>
+                        <textarea class="form-input" id="lessonModalDesc" rows="3" placeholder="Brief overview of the lesson..." style="resize:vertical;"></textarea>
                     </div>
                     <div class="form-row">
                         <div class="form-group">
-                            <label class="form-label">الترتيب</label>
+                            <label class="form-label">Order</label>
                             <input type="number" class="form-input" id="lessonModalOrder" min="1" value="${lessons.length + 1}">
                         </div>
                         <div class="form-group">
-                            <label class="form-label">الحالة</label>
+                            <label class="form-label">Status</label>
                             <select class="form-select" id="lessonModalStatus">
-                                <option value="published">منشور ✅</option>
-                                <option value="draft">مسودة 📝</option>
+                                <option value="published">Published ✅</option>
+                                <option value="draft">Draft 📝</option>
                             </select>
                         </div>
                     </div>
                 </div>
                 <div class="admin-modal-footer">
-                    <button class="btn btn-ghost" onclick="closeLessonModal()">إلغاء</button>
-                    <button class="btn btn-primary" onclick="saveLessonModal()">💾 حفظ الدرس</button>
+                    <button class="btn btn-ghost" onclick="closeLessonModal()">Cancel</button>
+                    <button class="btn btn-primary" onclick="saveLessonModal()">💾 Save Lesson</button>
                 </div>
             </div>
         </div>
@@ -3030,14 +3492,14 @@
         <div class="admin-modal-overlay" id="contentModalOverlay" onclick="closeContentModal()">
             <div class="admin-modal" onclick="event.stopPropagation()" id="contentModal">
                 <div class="admin-modal-header">
-                    <h3 id="contentModalTitle">إضافة محتوى</h3>
+                    <h3 id="contentModalTitle">Add Content</h3>
                     <button class="admin-modal-close" onclick="closeContentModal()">✕</button>
                 </div>
                 <div class="admin-modal-body">
                     <input type="hidden" id="contentModalId">
                     <input type="hidden" id="contentModalLessonId">
                     <div class="form-group">
-                        <label class="form-label">نوع المحتوى</label>
+                        <label class="form-label">Content Type</label>
                         <div class="content-type-grid" id="contentTypeGrid">
                             ${CONTENT_TYPES.map(t => `
                                 <div class="content-type-btn" data-type="${t.value}" onclick="selectContentType('${t.value}')">
@@ -3048,21 +3510,21 @@
                         </div>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">عنوان المحتوى <span style="color:var(--danger)">*</span></label>
-                        <input type="text" class="form-input" id="contentModalName" placeholder="مثال: فيديو 1 — نظرة عامة">
+                        <label class="form-label">Content Title <span style="color:var(--danger)">*</span></label>
+                        <input type="text" class="form-input" id="contentModalName" placeholder="e.g. Video 1 — Overview">
                     </div>
                     <div class="form-group" id="contentUrlGroup">
-                        <label class="form-label">الرابط / المحتوى</label>
-                        <input type="text" class="form-input" id="contentModalContent" placeholder="رابط الفيديو أو ملف PDF..." dir="ltr">
+                        <label class="form-label">Link / Content</label>
+                        <input type="text" class="form-input" id="contentModalContent" placeholder="Video URL or PDF link..." dir="ltr">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">المدة / الحجم</label>
-                        <input type="text" class="form-input" id="contentModalDuration" placeholder="مثال: 25 دقيقة أو 10 صفحات">
+                        <label class="form-label">Duration / Size</label>
+                        <input type="text" class="form-input" id="contentModalDuration" placeholder="e.g. 25 min or 10 pages">
                     </div>
                 </div>
                 <div class="admin-modal-footer">
-                    <button class="btn btn-ghost" onclick="closeContentModal()">إلغاء</button>
-                    <button class="btn btn-primary" onclick="saveContentModal()">💾 حفظ المحتوى</button>
+                    <button class="btn btn-ghost" onclick="closeContentModal()">Cancel</button>
+                    <button class="btn btn-primary" onclick="saveContentModal()">💾 Save Content</button>
                 </div>
             </div>
         </div>
@@ -3071,17 +3533,17 @@
         <div class="admin-modal-overlay" id="deleteModalOverlay" onclick="closeDeleteModal()">
             <div class="admin-modal admin-modal-sm" onclick="event.stopPropagation()">
                 <div class="admin-modal-header">
-                    <h3>⚠️ تأكيد الحذف</h3>
+                    <h3>⚠️ Confirm Deletion</h3>
                     <button class="admin-modal-close" onclick="closeDeleteModal()">✕</button>
                 </div>
                 <div class="admin-modal-body" style="text-align:center;padding:var(--space-xl);">
                     <div style="font-size:3rem;margin-bottom:var(--space-md);">🗑️</div>
-                    <p id="deleteModalMsg" style="font-size:1.05rem;">متأكد إنك عايز تحذف ده؟</p>
-                    <p style="color:var(--text-muted);font-size:0.88rem;margin-top:8px;">مفيش رجوع في الخطوة دي.</p>
+                    <p id="deleteModalMsg" style="font-size:1.05rem;">Are you sure you want to delete this?</p>
+                    <p style="color:var(--text-muted);font-size:0.88rem;margin-top:8px;">This action cannot be undone.</p>
                 </div>
                 <div class="admin-modal-footer">
-                    <button class="btn btn-ghost" onclick="closeDeleteModal()">إلغاء</button>
-                    <button class="btn btn-danger" id="deleteModalConfirmBtn">🗑 حذف</button>
+                    <button class="btn btn-ghost" onclick="closeDeleteModal()">Cancel</button>
+                    <button class="btn btn-danger" id="deleteModalConfirmBtn">🗑 Delete</button>
                 </div>
             </div>
         </div>`;
@@ -3092,12 +3554,12 @@
         const isOpen = index === 0;
 
         const contentsHTML = contents.length === 0
-            ? `<div class="lesson-box-empty">لسه معملتش محتوى — اضغط "إضافة محتوى"</div>`
+            ? `<div class="lesson-box-empty">No content items yet — click "Add Content"</div>`
             : contents.map((c, ci) => {
                 const typeConf = getContentTypeConfig(c.type);
                 return `
                 <div class="lesson-content-item" data-content-id="${c.contentId}" data-lesson-id="${lesson.lessonId}">
-                    <div class="lci-drag-handle" title="اسحب لإعادة الترتيب">⠿</div>
+                    <div class="lci-drag-handle" title="Drag to reorder">⠿</div>
                     <div class="lci-order">${ci + 1}</div>
                     <div class="lci-type-icon">${typeConf.icon}</div>
                     <div class="lci-info">
@@ -3108,8 +3570,8 @@
                         </div>
                     </div>
                     <div class="lci-actions">
-                        <button class="btn-icon-sm" title="تعديل" onclick="openContentModal('${lesson.lessonId}', '${c.contentId}')">✏️</button>
-                        <button class="btn-icon-sm danger" title="حذف" onclick="confirmDeleteContent('${c.contentId}', '${lesson.courseId}')">🗑</button>
+                        <button class="btn-icon-sm" title="Edit" onclick="openContentModal('${lesson.lessonId}', '${c.contentId}')">✏️</button>
+                        <button class="btn-icon-sm danger" title="Delete" onclick="confirmDeleteContent('${c.contentId}', '${lesson.courseId}')">🗑</button>
                     </div>
                 </div>`;
             }).join('');
@@ -3118,26 +3580,26 @@
         <div class="lesson-box ${isOpen ? 'open' : ''} ${lesson.status === 'draft' ? 'draft' : ''}" data-lesson-id="${lesson.lessonId}" id="lesson-box-${lesson.lessonId}">
             <div class="lesson-box-header" onclick="toggleLessonBox('${lesson.lessonId}')">
                 <div class="lesson-box-left">
-                    <div class="lesson-box-drag" title="اسحب لإعادة الترتيب">⠿</div>
+                    <div class="lesson-box-drag" title="Drag to reorder">⠿</div>
                     <div class="lesson-box-order">${lesson.order}</div>
                     <div class="lesson-box-toggle-icon" id="toggle-icon-${lesson.lessonId}">${isOpen ? '▼' : '▶'}</div>
                     <div class="lesson-box-title-wrap">
                         <div class="lesson-box-title">${lesson.title}</div>
                         <div class="lesson-box-meta">
                             <span class="badge ${lesson.status === 'published' ? 'badge-success' : 'badge-ghost'}">
-                                ${lesson.status === 'published' ? '✅ منشور' : '📝 مسودة'}
+                                ${lesson.status === 'published' ? '✅ Published' : '📝 Draft'}
                             </span>
-                            <span class="lesson-box-count">${contents.length} عنصر</span>
+                            <span class="lesson-box-count">${contents.length} items</span>
                             ${lesson.description ? `<span class="lesson-box-desc-preview">${lesson.description.slice(0, 50)}${lesson.description.length > 50 ? '...' : ''}</span>` : ''}
                         </div>
                     </div>
                 </div>
                 <div class="lesson-box-actions" onclick="event.stopPropagation()">
-                    <button class="btn btn-ghost btn-sm" title="تعديل الدرس" onclick="openLessonModal('${lesson.lessonId}', '${lesson.courseId}')">
-                        ✏️ تعديل
+                    <button class="btn btn-ghost btn-sm" title="Edit Lesson" onclick="openLessonModal('${lesson.lessonId}', '${lesson.courseId}')">
+                        ✏️ Edit
                     </button>
-                    <button class="btn btn-ghost btn-sm danger-hover" title="حذف الدرس" onclick="confirmDeleteLesson('${lesson.lessonId}', '${lesson.courseId}')">
-                        🗑 حذف
+                    <button class="btn btn-ghost btn-sm danger-hover" title="Delete Lesson" onclick="confirmDeleteLesson('${lesson.lessonId}', '${lesson.courseId}')">
+                        🗑 Delete
                     </button>
                 </div>
             </div>
@@ -3148,7 +3610,7 @@
                 </div>
                 <div class="lesson-box-footer">
                     <button class="btn btn-outline btn-sm" onclick="openContentModal('${lesson.lessonId}', null)">
-                        ＋ إضافة محتوى
+                        ＋ Add Content
                     </button>
                 </div>
             </div>
@@ -3170,8 +3632,8 @@
         <div class="dashboard-page">
             <div class="container">
                 <div class="dashboard-welcome reveal">
-                    <h2>أهلًا بيك تاني يا ${user.name || 'طالبنا'}! 👋</h2>
-                    <p>كمّل رحلتك في التعلّم — تقدّمك رائع فعلًا!</p>
+                    <h2>Welcome back, ${user.name || 'Student'}! 👋</h2>
+                    <p>Continue your learning journey — you're making wonderful progress!</p>
                 </div>
 
                 <div class="dashboard-stats">
@@ -3179,28 +3641,28 @@
                         <div class="dash-stat-icon green">📚</div>
                         <div class="dash-stat-info">
                             <div class="stat-val">${enrolled.length}</div>
-                            <div class="stat-label">كورسات مشترك بيها</div>
+                            <div class="stat-label">Enrolled Courses</div>
                         </div>
                     </div>
                     <div class="dash-stat-card reveal reveal-delay-2">
                         <div class="dash-stat-icon yellow">✅</div>
                         <div class="dash-stat-info">
                             <div class="stat-val">${completedLessons}</div>
-                            <div class="stat-label">دروس مكتملة</div>
+                            <div class="stat-label">Completed Lessons</div>
                         </div>
                     </div>
                     <div class="dash-stat-card reveal reveal-delay-3">
                         <div class="dash-stat-icon blue">📊</div>
                         <div class="dash-stat-info">
                             <div class="stat-val">${avgScore}%</div>
-                            <div class="stat-label">متوسط الدرجات</div>
+                            <div class="stat-label">Average Score</div>
                         </div>
                     </div>
                     <div class="dash-stat-card reveal reveal-delay-4">
                         <div class="dash-stat-icon red">🔥</div>
                         <div class="dash-stat-info">
                             <div class="stat-val">${user.streak || 1}</div>
-                            <div class="stat-label">أيام متتالية</div>
+                            <div class="stat-label">Day Streak</div>
                         </div>
                     </div>
                 </div>
@@ -3208,8 +3670,8 @@
                 <div class="dashboard-grid">
                     <div class="enrolled-courses-card reveal">
                         <div class="card-header">
-                            <h3>📚 الكورسات المشترك بيها</h3>
-                            <a href="#courses" class="btn btn-ghost btn-sm">عرض الكل</a>
+                            <h3>📚 Enrolled Courses</h3>
+                            <a href="#courses" class="btn btn-ghost btn-sm">View All</a>
                         </div>
                         ${enrolled.length > 0 ? enrolled.map(c => {
             const allLessons = c.packages.flatMap(p => p.lessons);
@@ -3220,7 +3682,7 @@
                                 <div class="enrolled-course-thumb">${c.icon}</div>
                                 <div class="enrolled-course-info">
                                     <h4>${c.title}</h4>
-                                    <div class="progress-text">اتكمّل ${completed} من ${allLessons.length} درس (${pct}%)</div>
+                                    <div class="progress-text">${completed} of ${allLessons.length} lessons completed (${pct}%)</div>
                                     <div class="progress-bar sm">
                                         <div class="progress-fill" style="width:${pct}%;"></div>
                                     </div>
@@ -3229,16 +3691,16 @@
         }).join('') : `
                             <div class="empty-state">
                                 <div class="empty-state-icon">📚</div>
-                                <h3>معندكش كورسات مفعّلة</h3>
-                                <p>تصفّح الكورسات المتاحة وابدأ تتعلّم النهاردة!</p>
-                                <a href="#courses" class="btn btn-primary">تصفّح الكورسات</a>
+                                <h3>No Enrolled Courses</h3>
+                                <p>Browse available courses and start learning today!</p>
+                                <a href="#courses" class="btn btn-primary">Browse Courses</a>
                             </div>
                         `}
                     </div>
 
                     <div class="activity-card reveal reveal-delay-1">
                         <div class="card-header">
-                            <h3>⚡ آخر الأنشطة</h3>
+                            <h3>⚡ Recent Activity</h3>
                         </div>
                         ${ACTIVITY_DATA.map(a => `
                             <div class="activity-item">
@@ -3264,20 +3726,20 @@
         const user = currentUser || {};
         const initials = getUserInitials(user.name || '');
         const grades = [
-            'أولى إعدادي',
-            'تانية إعدادي',
-            'تالتة إعدادي',
-            'أولى ثانوي',
-            'تانية ثانوي',
-            'تانية ثانوي برمجة',
-            'بكالوريا عام برمجة',
-            'تالتة ثانوي'
+            '1st Year Preparatory',
+            '2nd Year Preparatory',
+            '3rd Year Preparatory',
+            '1st Year Secondary',
+            '2nd Year Secondary',
+            '2nd Year Secondary — General',
+            '2nd Year Secondary — Baccalaureate',
+            '3rd Year Secondary'
         ];
         const govs = [
-            'القاهرة', 'الجيزة', 'الإسكندرية', 'الدقهلية', 'البحيرة', 'الفيوم', 'الغربية',
-            'الإسماعيلية', 'المنوفية', 'المنيا', 'القليوبية', 'الوادي الجديد', 'السويس', 'أسوان',
-            'أسيوط', 'بني سويف', 'بورسعيد', 'دمياط', 'الشرقية', 'جنوب سيناء',
-            'كفر الشيخ', 'مطروح', 'الأقصر', 'قنا', 'شمال سيناء', 'سوهاج', 'البحر الأحمر'
+            'Cairo', 'Giza', 'Alexandria', 'Dakahlia', 'Beheira', 'Fayoum', 'Gharbia',
+            'Ismailia', 'Menofia', 'Minya', 'Qalyubia', 'New Valley', 'Suez', 'Aswan',
+            'Assiut', 'Beni Suef', 'Port Said', 'Damietta', 'Sharqia', 'South Sinai',
+            'Kafr El Sheikh', 'Matrouh', 'Luxor', 'Qena', 'North Sinai', 'Sohag', 'Red Sea'
         ];
         return `
         <div class="profile-page">
@@ -3285,63 +3747,63 @@
                 <div class="profile-header-card reveal">
                     <div class="profile-avatar">${initials}</div>
                     <div class="profile-info">
-                        <h2>${user.name || 'طالبنا'}</h2>
+                        <h2>${user.name || 'Student'}</h2>
                         <div class="profile-email">${user.phone || ''}</div>
                         <div class="profile-badges">
-                            <span class="badge badge-primary">🎓 ${user.grade || 'طالب'}</span>
-                            <span class="badge badge-accent">⭐ طالب متميّز</span>
+                            <span class="badge badge-primary">🎓 ${user.grade || 'Student'}</span>
+                            <span class="badge badge-accent">⭐ Outstanding Student</span>
                         </div>
                     </div>
                 </div>
 
                 <div class="profile-grid">
                     <div class="profile-section reveal reveal-delay-1">
-                        <h3>👤 البيانات الشخصية</h3>
+                        <h3>👤 Personal Information</h3>
                         <form onsubmit="event.preventDefault(); saveProfileChanges();">
                             <div class="form-group">
-                                <label class="form-label">الاسم رباعي</label>
-                                <input type="text" class="form-input" id="profileName" value="${user.name || ''}" placeholder="أدخل اسمك رباعي">
+                                <label class="form-label">Full Name</label>
+                                <input type="text" class="form-input" id="profileName" value="${user.name || ''}" placeholder="Enter your full name">
                             </div>
                             <div class="form-group">
-                                <label class="form-label">رقم هاتف الطالب</label>
+                                <label class="form-label">Student Phone Number</label>
                                 <input type="tel" class="form-input phone-input" id="profilePhone" value="${user.phone || ''}" dir="ltr" maxlength="11" inputmode="numeric" oninput="this.value = this.value.replace(/[^0-9]/g, '').slice(0, 11)">
                             </div>
                             <div class="form-group">
-                                <label class="form-label">رقم هاتف ولي الأمر</label>
+                                <label class="form-label">Parent's Phone Number</label>
                                 <input type="tel" class="form-input phone-input" id="profileParentPhone" value="${user.parentPhone || ''}" dir="ltr" maxlength="11" inputmode="numeric" oninput="this.value = this.value.replace(/[^0-9]/g, '').slice(0, 11)">
                             </div>
                             <div class="form-group">
-                                <label class="form-label">الصف الدراسي</label>
+                                <label class="form-label">Academic Grade</label>
                                 <select class="form-select" id="profileGrade">
                                     ${grades.map(g => `<option ${user.grade === g ? 'selected' : ''}>${g}</option>`).join('')}
                                 </select>
                             </div>
                             <div class="form-group">
-                                <label class="form-label">المحافظة</label>
+                                <label class="form-label">Governorate</label>
                                 <select class="form-select" id="profileGovernorate">
                                     ${govs.map(g => `<option ${user.governorate === g ? 'selected' : ''}>${g}</option>`).join('')}
                                 </select>
                             </div>
-                            <button type="submit" class="btn btn-primary">حفظ التعديلات</button>
+                            <button type="submit" class="btn btn-primary">Save Changes</button>
                         </form>
                     </div>
 
                     <div class="profile-section reveal reveal-delay-2">
-                        <h3>🔒 الأمان</h3>
+                        <h3>🔒 Security</h3>
                         <form onsubmit="event.preventDefault(); changePassword();">
                             <div class="form-group">
-                                <label class="form-label">كلمة المرور الحالية</label>
-                                <input type="password" class="form-input" placeholder="أدخل كلمة المرور الحالية" id="currentPasswordInput">
+                                <label class="form-label">Current Password</label>
+                                <input type="password" class="form-input" placeholder="Enter current password" id="currentPasswordInput">
                             </div>
                             <div class="form-group">
-                                <label class="form-label">كلمة المرور الجديدة (6 أحرف على الأقل)</label>
-                                <input type="password" class="form-input" placeholder="6 أحرف أو أرقام على الأقل" id="newPasswordInput">
+                                <label class="form-label">New Password (at least 6 characters)</label>
+                                <input type="password" class="form-input" placeholder="6+ alphanumeric characters" id="newPasswordInput">
                             </div>
                             <div class="form-group">
-                                <label class="form-label">تأكيد كلمة المرور الجديدة</label>
-                                <input type="password" class="form-input" placeholder="أعد كتابة كلمة المرور الجديدة" id="confirmPasswordInput">
+                                <label class="form-label">Confirm New Password</label>
+                                <input type="password" class="form-input" placeholder="Re-enter new password" id="confirmPasswordInput">
                             </div>
-                            <button type="submit" class="btn btn-primary">تحديث كلمة المرور</button>
+                            <button type="submit" class="btn btn-primary">Update Password</button>
                         </form>
                     </div>
                 </div>
@@ -3367,13 +3829,14 @@
                 <div class="auth-visual-mesh"></div>
                 <div class="auth-visual-content">
                     <div class="auth-teacher-badge">
-                        <div class="auth-t-img auth-t-img-mono" aria-hidden="true"><span>أ</span></div>
+                        <img src="teacher-new.jpg?v=20260912" alt="Mr. Islam Abdelwahed" class="auth-t-img" onerror="this.src='صورة المدرس الجديد.jpeg'">
                         <div class="auth-t-info">
                             <div class="auth-t-crown">👑</div>
-                            <div class="auth-t-name">Mr. Ali Mahrous</div>
-                            <div class="auth-t-sub">Senior English Language Expert &amp; Educator 📖</div>
+                            <div class="auth-t-name">Mr. Islam Abdelwahed</div>
+                            <div class="auth-t-sub">Senior Biology Expert &amp; Educator 🔬</div>
                         </div>
                     </div>
+
                     <h2 class="auth-visual-title">Welcome Back to Your Platform! ✨</h2>
                     <p class="auth-visual-desc">Sign in to access your video lectures, practice exercises, and track your quiz performance in real time.</p>
 
@@ -3394,7 +3857,7 @@
                 <div class="auth-form-card">
                     <div class="auth-card-header">
                         <a href="#home" class="auth-logo-badge">
-                            <span class="auth-logo-icon">📖</span>
+                            <span class="auth-logo-icon">🔬</span>
                             <span class="auth-logo-text">${SITE_CONFIG.name}</span>
                         </a>
                         <h1 class="auth-heading">Sign In</h1>
@@ -3419,7 +3882,7 @@
                         <div class="form-group">
                             <div class="form-label-row">
                                 <label class="form-label">🔒 Password</label>
-                                <a href="#" onclick="event.preventDefault(); showToast('تواصل مع الدعم عبر واتساب لإعادة تعيين كلمة المرور', 'info');" class="forgot-pw-link">Forgot password?</a>
+                                <a href="#" onclick="event.preventDefault(); showToast('Contact support via WhatsApp to reset your password', 'info');" class="forgot-pw-link">Forgot password?</a>
                             </div>
                             <div class="form-input-icon-wrapper" style="position:relative;">
                                 <span class="form-input-icon">🔒</span>
@@ -3466,21 +3929,21 @@
                 <div class="auth-visual-mesh"></div>
                 <div class="auth-visual-content">
                     <div class="auth-teacher-badge">
-                        <div class="auth-t-img auth-t-img-mono" aria-hidden="true"><span>أ</span></div>
+                        <img src="teacher-new.jpg?v=20260912" alt="Mr. Islam Abdelwahed" class="auth-t-img" onerror="this.src='صورة المدرس الجديد.jpeg'">
                         <div class="auth-t-info">
                             <div class="auth-t-crown">👑</div>
-                            <div class="auth-t-name">Mr. Ali Mahrous</div>
-                            <div class="auth-t-sub">Senior English Language Expert &amp; Educator 📖</div>
+                            <div class="auth-t-name">Mr. Islam Abdelwahed</div>
+                            <div class="auth-t-sub">Senior Biology Expert &amp; Educator 🔬</div>
                         </div>
                     </div>
 
-                    <h2 class="auth-visual-title">Join the Elite in English! 🎓</h2>
+                    <h2 class="auth-visual-title">Join the Elite in Biology! 🎓</h2>
                     <p class="auth-visual-desc">Create your free account in seconds and unlock exclusive structured explanations and interactive quizzes.</p>
 
                     <div class="auth-features-list">
                         <div class="auth-feat-item">
                             <span class="auth-feat-icon">✨</span>
-                            <span>Clear, structured step-by-step English explanations</span>
+                            <span>Clear, structured step-by-step mathematical explanations</span>
                         </div>
                         <div class="auth-feat-item">
                             <span class="auth-feat-icon">🎯</span>
@@ -3498,7 +3961,7 @@
                 <div class="auth-form-card auth-register-card">
                     <div class="auth-card-header">
                         <a href="#home" class="auth-logo-badge">
-                            <span class="auth-logo-icon">📖</span>
+                            <span class="auth-logo-icon">🔬</span>
                             <span class="auth-logo-text">${SITE_CONFIG.name}</span>
                         </a>
                         <h1 class="auth-heading">Create Account</h1>
@@ -3590,7 +4053,7 @@
                                 </label>
                                 <label class="radio-pill-card">
                                     <input type="radio" name="registerSection" value="Baccalaureate" id="sectionBak">
-                                    <span>🌐 International Baccalaureate / Languages</span>
+                                    <span>🎓 International Baccalaureate / Languages</span>
                                 </label>
                             </div>
                         </div>
@@ -3624,7 +4087,7 @@
                         <div class="form-options-row">
                             <label class="remember-label">
                                 <input type="checkbox" required class="custom-checkbox" id="registerTerms" checked>
-                                <span>I agree to the <a href="#" onclick="event.preventDefault(); showToast('شروطنا بتضمن خصوصية وحماية بياناتك بالكامل.', 'info');" class="auth-link-terms">Terms of Service &amp; Privacy Policy</a></span>
+                                <span>I agree to the <a href="#" onclick="event.preventDefault(); showToast('Our terms ensure full privacy and protection of your data.', 'info');" class="auth-link-terms">Terms of Service &amp; Privacy Policy</a></span>
                             </label>
                         </div>
 
@@ -3795,7 +4258,7 @@
     window.activateLicenseCode = async function (courseId) {
         if (!isLoggedIn || !currentUser) {
             sessionStorage.setItem('iraqiplatform_redirect', 'license/' + courseId);
-            showToast('سجّل دخولك الأول عشان تفعّل الكورس ده', 'error');
+            showToast('Please sign in first to activate this course', 'error');
             navigate('login');
             return;
         }
@@ -3805,7 +4268,7 @@
         const code = (input ? input.value : '').trim().toUpperCase();
 
         if (!code) {
-            showToast('⚠️ من فضلك أدخل كود التفعيل الأول', 'error');
+            showToast('⚠️ Please enter an activation code first', 'error');
             if (input) input.focus();
             return;
         }
@@ -3883,7 +4346,7 @@
             }
 
             if (!foundCode) {
-                showToast('❌ الكود ده مش صحيح أو مش موجود في النظام', 'error');
+                showToast('❌ This code is invalid or does not exist in the system', 'error');
                 if (btn) { btn.textContent = 'Activate Code Now ✅'; btn.disabled = false; }
                 if (input) { input.value = ''; input.focus(); }
                 return;
@@ -3892,7 +4355,7 @@
             const targetCourseId = String(courseId || '');
             const codeCourseId = String(foundCode.courseId || '');
             if (codeCourseId && codeCourseId !== targetCourseId && codeCourseId !== 'all') {
-                showToast('⚠️ الكود ده خاص بكورس تاني', 'error');
+                showToast('⚠️ This code is assigned to a different course', 'error');
                 if (btn) { btn.textContent = 'Activate Code Now ✅'; btn.disabled = false; }
                 return;
             }
@@ -3905,11 +4368,11 @@
 
                 if (isMyCode) {
                     await enrollStudentInCourse(targetCourseId);
-                    showToast('✅ الكورس متفعّل بالفعل على حسابك — جاري فتح الدرس الأول...', 'success');
+                    showToast('✅ Course already activated on your account — Opening first lesson...', 'success');
                     launchFirstLesson(targetCourseId);
                     return;
                 } else {
-                    showToast('❌ كود التفعيل ده اتستخدم بالفعل من طالب تاني', 'error');
+                    showToast('❌ This activation code has already been used by another student', 'error');
                     if (btn) { btn.textContent = 'Activate Code Now ✅'; btn.disabled = false; }
                     return;
                 }
@@ -3917,7 +4380,7 @@
 
             if (foundCode.linkedStudentId && String(foundCode.linkedStudentId) !== String(currentUser.id)) {
                 if (foundCode.linkedStudentPhone && currentUser.phone && String(foundCode.linkedStudentPhone) !== String(currentUser.phone)) {
-                    showToast('⚠️ الكود ده مرتبط برقم طالب تاني', 'error');
+                    showToast('⚠️ This code is assigned to a different student number', 'error');
                     if (btn) { btn.textContent = 'Activate Code Now ✅'; btn.disabled = false; }
                     return;
                 }
@@ -3961,14 +4424,14 @@
 
             await enrollStudentInCourse(targetCourseId);
 
-            showToast('🎉 تم تفعيل الكورس بنجاح! جاري فتح الدرس الأول...', 'success');
+            showToast('🎉 Course activated successfully! Opening first lesson...', 'success');
             if (btn) { btn.textContent = 'Activated Successfully ✅'; }
 
             launchFirstLesson(targetCourseId);
 
         } catch (err) {
             console.error('[activateLicenseCode]', err);
-            showToast('❌ حصل خطأ أثناء التفعيل: ' + err.message, 'error');
+            showToast('❌ Error during activation: ' + err.message, 'error');
             if (btn) { btn.textContent = 'Activate Code Now ✅'; btn.disabled = false; }
         }
     };
@@ -3977,7 +4440,7 @@
     //  Request Activation via WhatsApp
     // ═══════════════════════════════════════════════════════════
     window.requestActivationWhatsApp = function (courseId, courseTitle, price) {
-        var name = (currentUser && currentUser.name) ? currentUser.name : 'الطالب';
+        var name = (currentUser && currentUser.name) ? currentUser.name : 'Student';
         var phone = (currentUser && currentUser.phone) ? currentUser.phone : '';
         var priceStr = price || 0;
         var titleStr = courseTitle || courseId;
@@ -3989,11 +4452,11 @@
             '👤 Student Name: ' + name + '\n' +
             (phone ? '📱 Phone: ' + phone + '\n' : '') +
             '💰 Amount: ' + priceStr + ' EGP\n' +
-            '📲 Paid via Vodafone Cash: 01060976964\n\n' +
+            '📲 Paid via Vodafone Cash: 01220222307\n\n' +
             '(I will attach payment receipt in the next message)';
 
         var encoded = encodeURIComponent(message);
-        var waUrl = 'https://wa.me/201060976964?text=' + encoded;
+        var waUrl = 'https://wa.me/201220222307?text=' + encoded;
         window.open(waUrl, '_blank', 'noopener,noreferrer');
     };
 
@@ -4302,7 +4765,7 @@
             if (quizAnswers[qi] === q.correct) correct++;
         });
         const pct = Math.round((correct / QUIZ_DATA.questions.length) * 100);
-        showToast('الدرجة: ' + correct + '/' + QUIZ_DATA.questions.length + ' (' + pct + '%) ' + (pct >= 80 ? '🎉' : pct >= 50 ? '👍' : '💪'), pct >= 50 ? 'success' : 'error');
+        showToast('Score: ' + correct + '/' + QUIZ_DATA.questions.length + ' (' + pct + '%) ' + (pct >= 80 ? '🎉' : pct >= 50 ? '👍' : '💪'), pct >= 50 ? 'success' : 'error');
     };
 
     // Password toggle
@@ -4335,19 +4798,19 @@
             text.style.color = '#ef4444';
         } else if (len < 6) {
             fill.style.width = (len / 6 * 100) + '%';
-            fill.style.background = '#f59e0b';
+            fill.style.background = '#C9962C';
             text.textContent = len + '/6 characters — enter at least ' + (6 - len) + ' more character(s)';
-            text.style.color = '#f59e0b';
+            text.style.color = '#C9962C';
         } else if (len < 10) {
             fill.style.width = '70%';
-            fill.style.background = '#10b981';
+            fill.style.background = '#14B8A6';
             text.textContent = '✅ Good password (' + len + ' characters)';
-            text.style.color = '#10b981';
+            text.style.color = '#14B8A6';
         } else {
             fill.style.width = '100%';
-            fill.style.background = '#0ea5e9';
+            fill.style.background = '#22437A';
             text.textContent = '💪 Strong password (' + len + ' characters)';
-            text.style.color = '#0ea5e9';
+            text.style.color = '#22437A';
         }
     };
 
@@ -4389,11 +4852,12 @@
     };
 
     // ── Auth Handlers ────────────────────────────────────────────
-    window.handleLogin = function () {
+    window.handleLogin = async function () {
         const phoneInput = document.getElementById('loginPhone');
         let phone = phoneInput ? phoneInput.value.trim().replace(/[^0-9]/g, '') : '';
         const password = document.getElementById('loginPassword') ? document.getElementById('loginPassword').value : '';
         const errorMsg = document.getElementById('loginErrorMsg');
+        const loginBtn = document.getElementById('loginSubmitBtn');
 
         function showError(msg) {
             if (errorMsg) {
@@ -4416,15 +4880,31 @@
             return;
         }
 
-        const user = getUsers().find(u => (u.phone || '').replace(/[^0-9]/g, '') === phone);
-        if (!user || user.password !== password) {
-            showError('Incorrect phone number or password. Please verify your credentials.');
+        // ── خطوة 1: هل الحساب موجود؟ (قاعدة البيانات هي المرجع الأساسي) ──
+        var _loginBtnOriginalHtml = loginBtn ? loginBtn.innerHTML : '';
+        if (loginBtn) { loginBtn.disabled = true; loginBtn.innerHTML = '<span>Verifying…</span>'; }
+        let account;
+        try {
+            account = await findAccountByPhone(phone);
+        } finally {
+            if (loginBtn) { loginBtn.disabled = false; loginBtn.innerHTML = _loginBtnOriginalHtml; }
+        }
+
+        if (!account) {
+            showError('This phone number is not registered. Please create an account first.');
             return;
         }
 
-        saveSession(user);
+        // ── خطوة 2: هل كلمة المرور صحيحة؟ (منفصلة تمامًا عن خطوة وجود الحساب) ──
+        if (!verifyAccountPassword(account, password)) {
+            showError('Incorrect password. Please try again.');
+            return;
+        }
+
+        // ── خطوة 3: إنشاء جلسة الدخول ──────────────────────────────────
+        saveSession(account);
         refreshLayout();
-        showToast('أهلًا بيك تاني يا ' + user.name + '! تم تسجيل الدخول بنجاح 🎉', 'success');
+        showToast('Welcome back, ' + account.name + '! Signed in successfully 🎉', 'success');
         const redirect = sessionStorage.getItem('iraqiplatform_redirect');
         if (redirect) {
             sessionStorage.removeItem('iraqiplatform_redirect');
@@ -4434,7 +4914,7 @@
         }
     };
 
-    window.handleRegister = function () {
+    window.handleRegister = async function () {
         const fullName = document.getElementById('registerFullName') ? document.getElementById('registerFullName').value.trim() : '';
         const phoneInput = document.getElementById('registerPhone');
         const parentPhoneInput = document.getElementById('registerParentPhone');
@@ -4496,14 +4976,17 @@
             return;
         }
 
-        const users = getUsers();
-        const existingPhone = users.find(u => (u.phone || '').replace(/[^0-9]/g, '') === phone);
+        // ── نفس دالة التحقق المستخدمة في تسجيل الدخول بالظبط — قاعدة
+        //    البيانات هي المرجع، عشان طالب ما يقدرش يعمل حساب مكرر لو
+        //    رقمه مسجّل بالفعل من جهاز تاني ────────────────────────────
+        const existingPhone = await findAccountByPhone(phone);
 
         if (existingPhone) {
             showError('This student phone number is already registered. Please sign in instead.');
             return;
         }
 
+        const users = getUsers();
         const gradeLabel = (grade === '2nd Year Secondary' || grade === 'ثانية ثانوي') && section ? grade + ' — ' + section : grade;
         const newUser = {
             id: 'user_' + Date.now(),
@@ -4526,7 +5009,7 @@
         saveUsers(users);
         saveSession(newUser);
         refreshLayout();
-        showToast('أهلًا بيك يا ' + fullName + '! تم إنشاء الحساب بنجاح 🎉', 'success');
+        showToast('Welcome, ' + fullName + '! Account created successfully 🎉', 'success');
         const regRedirect = sessionStorage.getItem('iraqiplatform_redirect');
         if (regRedirect) {
             sessionStorage.removeItem('iraqiplatform_redirect');
@@ -4540,7 +5023,7 @@
         clearSession();
         refreshLayout();
         navigate('home');
-        showToast('تم تسجيل الخروج بنجاح');
+        showToast('Signed out successfully');
     };
 
     // Profile save
@@ -4551,13 +5034,13 @@
         const parentPhone = document.getElementById('profileParentPhone') ? document.getElementById('profileParentPhone').value.trim().replace(/[^0-9]/g, '') : '';
         const grade = document.getElementById('profileGrade') ? document.getElementById('profileGrade').value : '';
         const governorate = document.getElementById('profileGovernorate') ? document.getElementById('profileGovernorate').value : '';
-        if (!name) { showToast('من فضلك أدخل اسمك رباعي', 'error'); return; }
+        if (!name) { showToast('Please enter your full name', 'error'); return; }
         if (phone && (phone.length !== 11 || !phone.startsWith('01'))) {
-            showToast('رقم هاتف الطالب لازم يكون 11 رقم ويبدأ بـ 01', 'error');
+            showToast('Student phone must be 11 digits starting with 01', 'error');
             return;
         }
         if (parentPhone && (parentPhone.length !== 11 || !parentPhone.startsWith('01'))) {
-            showToast('رقم هاتف ولي الأمر لازم يكون 11 رقم ويبدأ بـ 01', 'error');
+            showToast('Parent phone must be 11 digits starting with 01', 'error');
             return;
         }
         currentUser.name = name;
@@ -4569,7 +5052,7 @@
         const users = getUsers();
         const idx = users.findIndex(u => u.id === currentUser.id);
         if (idx !== -1) { users[idx] = currentUser; saveUsers(users); }
-        showToast('تم تحديث البيانات بنجاح! ✅', 'success');
+        showToast('Profile updated successfully! ✅', 'success');
         refreshLayout();
     };
 
@@ -4579,15 +5062,15 @@
         const current = document.getElementById('currentPasswordInput') ? document.getElementById('currentPasswordInput').value : '';
         const newPw = document.getElementById('newPasswordInput') ? document.getElementById('newPasswordInput').value : '';
         const confirm = document.getElementById('confirmPasswordInput') ? document.getElementById('confirmPasswordInput').value : '';
-        if (current !== currentUser.password) { showToast('كلمة المرور الحالية غير صحيحة', 'error'); return; }
-        if (!validatePassword(newPw)) { showToast('كلمة المرور الجديدة لازم تكون 6 أحرف أو أرقام على الأقل', 'error'); return; }
-        if (newPw !== confirm) { showToast('كلمة المرور الجديدة والتأكيد مش متطابقين', 'error'); return; }
+        if (current !== currentUser.password) { showToast('Current password is incorrect', 'error'); return; }
+        if (!validatePassword(newPw)) { showToast('New password must be at least 6 alphanumeric characters', 'error'); return; }
+        if (newPw !== confirm) { showToast('New password and confirmation do not match', 'error'); return; }
         currentUser.password = newPw;
         saveSession(currentUser);
         const users = getUsers();
         const idx = users.findIndex(u => u.id === currentUser.id);
         if (idx !== -1) { users[idx] = currentUser; saveUsers(users); }
-        showToast('تم تغيير كلمة المرور بنجاح! 🔒', 'success');
+        showToast('Password changed successfully! 🔒', 'success');
     };
 
     // Navigate helper
@@ -4749,7 +5232,27 @@
             } catch (e) { console.warn('[initLessonPage] auto-refresh:', e.message); }
         }, 1500);
     }
-    function initLicensePage() { }
+    function initLicensePage() {
+        // ── تأكيد حي من Firebase إن حالة تفعيل الكورسات محدّثة، بدل ما
+        //    نعتمد بس على النسخة المخزّنة في جلسة تسجيل الدخول الحالية —
+        //    وده اللي بيحل مشكلة "يطلب كود تفعيل تاني" لو الطالب فعّل
+        //    الكورس من جهاز/متصفح مختلف. Firebase هو المرجع الحقيقي دايمًا.
+        if (!window.db || !currentUser || !currentUser.id) return;
+        window.db.collection('users').doc(String(currentUser.id)).get().then(function (doc) {
+            if (!doc.exists) return;
+            var remote = doc.data() || {};
+            var remoteCourses = Array.isArray(remote.enrolledCourses) ? remote.enrolledCourses.map(String) : [];
+            var localCourses = Array.isArray(currentUser.enrolledCourses) ? currentUser.enrolledCourses.map(String) : [];
+            var hasNew = remoteCourses.some(function (id) { return localCourses.indexOf(id) === -1; });
+            if (hasNew) {
+                currentUser.enrolledCourses = remoteCourses;
+                saveSession(currentUser);
+                if (typeof window.handleRoute === 'function') window.handleRoute();
+            }
+        }).catch(function (e) {
+            console.warn('[License] Firebase enrollment check failed:', e.message);
+        });
+    }
 
     function initAdminCoursePage() {
         // لا شيء إضافي حالياً — الـ drag & drop مستقبلي
@@ -4813,14 +5316,14 @@
         const order = parseInt(document.getElementById('lessonModalOrder').value) || 1;
         const status = document.getElementById('lessonModalStatus').value;
 
-        if (!title) { showToast('من فضلك أدخل عنوان الدرس', 'error'); return; }
+        if (!title) { showToast('Please enter a lesson title', 'error'); return; }
 
         if (lessonId) {
             updateLesson(lessonId, { title, description, order, status });
-            showToast('✅ تم تحديث الدرس بنجاح', 'success');
+            showToast('✅ Lesson updated successfully', 'success');
         } else {
             createLesson(courseId, { title, description, order, status });
-            showToast('✅ تم إنشاء الدرس بنجاح', 'success');
+            showToast('✅ Lesson created successfully', 'success');
         }
 
         closeLessonModal();
@@ -4880,10 +5383,10 @@
         const contentInput = document.getElementById('contentModalContent');
         if (contentInput) {
             const placeholders = {
-                video: 'رابط الفيديو (يوتيوب، فيميو، بني، ...)',
-                pdf: 'ملف PDF أو رابط جوجل درايف',
-                quiz: 'معرّف الاختبار أو الرابط',
-                text: 'اكتب الملاحظات أو نص المحاضرة هنا...'
+                video: 'Video URL (YouTube, Vimeo, Bunny, ...)',
+                pdf: 'PDF file or Google Drive URL',
+                quiz: 'Quiz identifier or URL',
+                text: 'Write notes or lecture text here...'
             };
             contentInput.placeholder = placeholders[type] || 'Content link...';
         }
@@ -4897,17 +5400,17 @@
         const duration = (document.getElementById('contentModalDuration').value || '').trim();
         const type = _adminSelectedContentType;
 
-        if (!title) { showToast('من فضلك أدخل عنوان المحتوى', 'error'); return; }
+        if (!title) { showToast('Please enter a content title', 'error'); return; }
 
         const lesson = getLessons().find(l => l.lessonId === lessonId);
         const courseId = lesson ? lesson.courseId : _adminCurrentCourseId;
 
         if (contentId) {
             updateContent(contentId, { title, content, duration, type });
-            showToast('✅ تم تحديث المحتوى بنجاح', 'success');
+            showToast('✅ Content updated successfully', 'success');
         } else {
             createContent(lessonId, { title, content, duration, type });
-            showToast('✅ تم إضافة المحتوى بنجاح', 'success');
+            showToast('✅ Content added successfully', 'success');
         }
 
         closeContentModal();
@@ -4961,7 +5464,7 @@
         const msg = `Are you sure you want to delete "${name}"?${contentCount > 0 ? ` ${contentCount} content items will also be removed.` : ''}`;
         openDeleteModal(msg, function () {
             deleteLesson(lessonId);
-            showToast('🗑 تم حذف الدرس بنجاح', 'success');
+            showToast('🗑 Lesson deleted successfully', 'success');
             navigate('admin-course/' + courseId);
         });
     };
@@ -4974,7 +5477,7 @@
             const lesson = lessonId ? getLessons().find(l => l.lessonId === lessonId) : null;
             const cId = courseId || (lesson ? lesson.courseId : null);
             deleteContent(contentId);
-            showToast('🗑 تم حذف المحتوى بنجاح', 'success');
+            showToast('🗑 Content deleted successfully', 'success');
             if (cId) navigate('admin-course/' + cId);
         });
     };
@@ -5029,6 +5532,13 @@
         // Load session from localStorage first
         loadSession();
 
+        // تأكيد صلاحية الجلسة المستعادة من قاعدة البيانات في الخلفية —
+        // بدون تأخير عرض الواجهة (نفس التوقيت اللي كان مستخدم أصلاً
+        // لمزامنة الأكواد تحت)
+        setTimeout(function () {
+            verifySessionInBackground();
+        }, 1500);
+
         // Sync codes from Firebase
         setTimeout(function () {
             syncCodesFromFirebase().catch(function (e) {
@@ -5042,10 +5552,10 @@
         if (!adminExists) {
             users.push({
                 id: 'admin_builtin',
-                name: 'Mr. Ali Mahrous',
+                name: 'Mr. Islam Abdelwahed',
                 email: ADMIN_EMAIL,
                 phone: '01000000000',
-                grade: 'إدارة',
+                grade: 'Admin',
                 password: ADMIN_PASSWORD,
                 enrolledCourses: [],
                 completedLessons: 0,
@@ -5058,29 +5568,9 @@
 
         // Render layout into #app container
         const appContainer = document.getElementById('app');
-        const joinFamilyHTML =
-            '<section class="join-family-section">' +
-            '  <div class="jf-inner">' +
-            '    <span class="jf-badge">🤝 مجتمعنا</span>' +
-            '    <h2 class="jf-title">انضم لعائلة أفكار وأسرار</h2>' +
-            '    <p class="jf-subtitle">تابعنا وكن جزء من عائلة متعلّمين متنامية — دروس وتحديثات ودعم، كل ده في مكان واحد.</p>' +
-            '    <div class="jf-card jf-social-card">' +
-            '      <a href="https://wa.me/201000000000" target="_blank" rel="noopener" class="jf-social-item jf-social-wa">' +
-            '        <span class="jf-social-icon">💬</span><span class="jf-social-label">واتساب</span>' +
-            '      </a>' +
-            '      <a href="#" target="_blank" rel="noopener" class="jf-social-item jf-social-tg">' +
-            '        <span class="jf-social-icon">✈️</span><span class="jf-social-label">تيليجرام</span>' +
-            '      </a>' +
-            '      <a href="#" target="_blank" rel="noopener" class="jf-social-item jf-social-fb">' +
-            '        <span class="jf-social-icon">📘</span><span class="jf-social-label">فيسبوك</span>' +
-            '      </a>' +
-            '    </div>' +
-            '  </div>' +
-            '</section>';
         const layoutHTML =
             renderHeader() +
             '<main id="app-content"></main>' +
-            joinFamilyHTML +
             '<footer class="footer" id="main-footer">' + renderFooter() + '</footer>' +
             '<div id="modal-container"></div>';
 
@@ -5104,7 +5594,7 @@
     window.openCourse = function (courseId) {
         if (!isLoggedIn) {
             sessionStorage.setItem('iraqiplatform_redirect', 'license/' + courseId);
-            showToast('سجّل دخولك الأول عشان توصل للكورس ده', 'error');
+            showToast('Please sign in first to access this course', 'error');
             navigate('login');
             return;
         }
@@ -5131,7 +5621,7 @@
     window.openLesson = function (courseId, lessonId) {
         if (!isLoggedIn) {
             sessionStorage.setItem('iraqiplatform_redirect', 'lesson/' + courseId + '/' + lessonId);
-            showToast('سجّل دخولك الأول عشان توصل للدرس ده', 'error');
+            showToast('Please sign in first to access this lesson', 'error');
             navigate('login');
             return;
         }
@@ -5140,7 +5630,7 @@
             return String(id) === String(courseId);
         });
         if (!course || (!course.isFree && !isEnrolled)) {
-            showToast('الكورس ده محتاج تفعيل الأول', 'error');
+            showToast('This course requires activation first', 'error');
             navigate('license/' + courseId);
             return;
         }
@@ -5152,21 +5642,21 @@
     // ═══════════════════════════════════════════════════════════
     function renderAuthRequiredPage(courseId) {
         var course = getAllCourses().find(function (c) { return String(c.id) === String(courseId); });
-        var courseTitle = course ? course.title : 'الكورس المختار';
+        var courseTitle = course ? course.title : 'Selected Course';
         return '<div style="padding-top:calc(var(--header-height) + var(--space-3xl));padding-bottom:var(--space-3xl);min-height:80vh;display:flex;align-items:center;">' +
             '<div class="container">' +
             '<div class="reveal" style="max-width:520px;margin:0 auto;text-align:center;background:var(--bg-surface,#fff);border-radius:24px;padding:56px 40px;box-shadow:0 24px 64px rgba(0,0,0,.10);border:1px solid var(--border);">' +
             '<div style="font-size:64px;margin-bottom:20px;">🔐</div>' +
-            '<h2 style="font-size:1.6rem;font-weight:900;margin-bottom:12px;">لازم تسجّل الدخول الأول</h2>' +
-            '<div style="background:linear-gradient(135deg,#F1ECFF,#E4D8FF);border:1px solid #A780F5;border-radius:14px;padding:16px 20px;margin-bottom:28px;">' +
-            '<p style="margin:0;color:#5B21B6;font-size:0.95rem;font-weight:600;">عشان توصل لكورس: <span style="color:#150e29;">' + courseTitle + '</span></p>' +
+            '<h2 style="font-size:1.6rem;font-weight:900;margin-bottom:12px;">Sign In Required</h2>' +
+            '<div style="background:linear-gradient(135deg,#FFF7ED,#FFEDD5);border:1px solid #6EE7B7;border-radius:14px;padding:16px 20px;margin-bottom:28px;">' +
+            '<p style="margin:0;color:#047857;font-size:0.95rem;font-weight:600;">To access course: <span style="color:#0B2A1D;">' + courseTitle + '</span></p>' +
             '</div>' +
-            '<p style="color:var(--text-secondary);font-size:0.95rem;margin-bottom:32px;line-height:1.8;">من فضلك سجّل دخولك أو أنشئ حساب مجاني عشان تكمّل للكورس اللي اخترته.</p>' +
+            '<p style="color:var(--text-secondary);font-size:0.95rem;margin-bottom:32px;line-height:1.8;">Please sign in or create a free account to continue to your selected course.</p>' +
             '<div style="display:flex;flex-direction:column;gap:12px;">' +
-            '<a href="#login" class="btn btn-primary btn-lg btn-block" onclick="sessionStorage.setItem(\'iraqiplatform_redirect\',\'license/' + courseId + '\')">🔑 تسجيل الدخول</a>' +
-            '<a href="#register" class="btn btn-outline btn-lg btn-block" onclick="sessionStorage.setItem(\'iraqiplatform_redirect\',\'license/' + courseId + '\')">✨ إنشاء حساب</a>' +
+            '<a href="#login" class="btn btn-primary btn-lg btn-block" onclick="sessionStorage.setItem(\'iraqiplatform_redirect\',\'license/' + courseId + '\')">🔑 Sign In</a>' +
+            '<a href="#register" class="btn btn-outline btn-lg btn-block" onclick="sessionStorage.setItem(\'iraqiplatform_redirect\',\'license/' + courseId + '\')">✨ Create Account</a>' +
             '</div>' +
-            '<div style="margin-top:20px;"><a href="#courses" style="color:var(--text-muted);font-size:0.85rem;">← الرجوع للكورسات</a></div>' +
+            '<div style="margin-top:20px;"><a href="#courses" style="color:var(--text-muted);font-size:0.85rem;">← Back to Courses</a></div>' +
             '</div>' +
             '</div>' +
             '</div>';
