@@ -1,0 +1,6 @@
+(function(){var h=document.getElementById('header');function u(){if(!h)return;var s=scrollY>40;h.classList.toggle('scrolled',s);h.classList.toggle('transparent',!s)}addEventListener('scroll',u,{passive:true});u();
+var hb=document.querySelector('.hamburger'),mn=document.querySelector('.mobile-nav'),ov=document.querySelector('.nav-overlay');function t(o){[hb,mn,ov].forEach(function(e){e&&e.classList.toggle('open',o)});document.body.style.overflow=o?'hidden':''}
+hb&&hb.addEventListener('click',function(){t(!mn.classList.contains('open'))});ov&&ov.addEventListener('click',function(){t(false)});
+var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('animated');io.unobserve(e.target)}})},{threshold:.1});document.querySelectorAll('[data-anim]').forEach(function(e){io.observe(e)});
+var f=document.getElementById('wa-form');if(f)f.addEventListener('submit',function(e){e.preventDefault();var m=['*'+f.dataset.title+'* — APLOMADO ELECTRONICS'];f.querySelectorAll('.form-group').forEach(function(g){var v=g.querySelector('input,select,textarea').value.trim();if(v)m.push(g.querySelector('label').textContent.replace('*','').trim()+': '+v)});
+window.open('https://wa.me/201120235995?text='+encodeURIComponent(m.join('\n')),'_blank');f.hidden=true;f.parentNode.querySelector('.form-ok').hidden=false})})();
